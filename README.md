@@ -1,2 +1,11 @@
-# -
-In order to repurpose intricately named videos into an easily scrapable format, there is now a project like this, and the naming conventions will be updated as new video formats emerge.
+#
+番号净化器
+番号净化器是一个用于重命名文件的工具，专注于处理包含特定格式和关键词的文件名。它能够删除不需要的前缀、替换特定字符，并对文件名进行标准化，以便于管理和查看。
+
+功能
+删除指定前缀（如 hhd800.com@ 和 www.98T.la@）
+替换文件名中的 00 为 -，例如 00001 将变为 -001
+删除 hhb 及其后面的所有内容。
+将 xxx-yyy 格式中的 xxx 前面的所有字符删除。
+预览修改结果，提供确认和取消按钮。
+保留文件的原有格式（扩展名）。
