@@ -1,9 +1,25 @@
 import os
 import re
+import configparser
 from tkinter import filedialog, messagebox, ttk
 from ttkbootstrap import Style
 from ttkbootstrap.constants import *
 from tkinter.ttk import Frame, Label, Button, Progressbar, Treeview
+
+CONFIG_FILE = 'config.ini'
+
+def load_last_path():
+    config = configparser.ConfigParser()
+    if os.path.exists(CONFIG_FILE):
+        config.read(CONFIG_FILE)
+        return config.get('Settings', 'last_path', fallback=None)
+    return None
+
+def save_last_path(path):
+    config = configparser.ConfigParser()
+    config['Settings'] = {'last_path': path}
+    with open(CONFIG_FILE, 'w') as configfile:
+        config.write(configfile)
 
 def preview_files(folder_path):
     files = os.listdir(folder_path)
@@ -64,6 +80,7 @@ def select_folder():
         folder_label.config(text=f'选择文件夹: {selected_folder}')
         preview_changes = preview_files(selected_folder)
         start_button.config(state="normal")
+        save_last_path(selected_folder)
 
 def start_renaming():
     if selected_folder:
@@ -89,10 +106,16 @@ root.title("番号净化器")
 root.geometry("900x600")
 root.configure(bg="#2C2F33")  # 设置背景为暗灰色
 
-selected_folder = None
+selected_folder = load_last_path()
+if selected_folder:
+    folder_label_text = f'选择文件夹: {selected_folder}'
+    start_button_state = "normal"
+else:
+    folder_label_text = "未选择文件夹"
+    start_button_state = "disabled"
 
 # 文件夹选择标签
-folder_label = Label(root, text="未选择文件夹", background="#2C2F33", foreground="white")
+folder_label = Label(root, text=folder_label_text, background="#2C2F33", foreground="white")
 folder_label.pack(pady=10)
 
 # 文件夹选择按钮
@@ -100,7 +123,7 @@ select_button = Button(root, text="选择文件夹", command=select_folder)
 select_button.pack(pady=5)
 
 # 操作按钮
-start_button = Button(root, text="确认重命名", command=start_renaming, state=DISABLED)
+start_button = Button(root, text="确认重命名", command=start_renaming, state=start_button_state)
 start_button.pack(pady=5)
 
 cancel_button = Button(root, text="取消", command=cancel_renaming)
@@ -124,5 +147,8 @@ tree.pack(fill=BOTH, expand=True)
 progress = Progressbar(root, orient=HORIZONTAL, mode='determinate')
 progress.pack(pady=10, fill=X, padx=20)
 
-root.mainloop()
+# 如果有上次保存的路径，加载并预览文件
+if selected_folder:
+    preview_files(selected_folder)
 
+root.mainloop()
