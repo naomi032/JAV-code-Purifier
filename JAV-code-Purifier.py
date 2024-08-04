@@ -5,7 +5,6 @@ from ttkbootstrap import Style
 from ttkbootstrap.constants import *
 from tkinter.ttk import Frame, Label, Button, Progressbar, Treeview
 
-
 def preview_files(folder_path):
     files = os.listdir(folder_path)
     preview_changes = []
@@ -20,8 +19,9 @@ def preview_files(folder_path):
         # 删除特定前缀
         new_name = re.sub(r'hhd800\.com@|www\.98T\.la@', '', name)
 
-        # 替换第一个'00'为'-'
-        new_name = new_name.replace('00', '-', 1)
+        # 如果不是三位数字结尾且包含'00'，则替换第一个'00'为'-'
+        if not re.match(r'.*\d{3}$', new_name):
+            new_name = new_name.replace('00', '-', 1)
 
         # 删除'hhb'及其后面的所有内容
         new_name = re.sub(r'hhb.*', '', new_name)
@@ -48,7 +48,6 @@ def preview_files(folder_path):
 
     return preview_changes
 
-
 def rename_files(preview_changes):
     for old_name, preview_name, final_name in preview_changes:
         old_path = os.path.join(selected_folder, old_name)
@@ -58,7 +57,6 @@ def rename_files(preview_changes):
     messagebox.showinfo("完成", "文件重命名完成！")
     preview_files(selected_folder)  # 刷新预览列表
 
-
 def select_folder():
     global selected_folder
     selected_folder = filedialog.askdirectory()
@@ -66,7 +64,6 @@ def select_folder():
         folder_label.config(text=f'选择文件夹: {selected_folder}')
         preview_changes = preview_files(selected_folder)
         start_button.config(state="normal")
-
 
 def start_renaming():
     if selected_folder:
@@ -79,13 +76,11 @@ def start_renaming():
     else:
         messagebox.showwarning("警告", "请先选择一个文件夹")
 
-
 def cancel_renaming():
     for item in tree.get_children():
         tree.delete(item)
     folder_label.config(text="未选择文件夹")
     start_button.config(state="disabled")
-
 
 # 创建主窗口
 style = Style(theme="superhero")  # 使用ttkbootstrap的深色主题
@@ -130,3 +125,4 @@ progress = Progressbar(root, orient=HORIZONTAL, mode='determinate')
 progress.pack(pady=10, fill=X, padx=20)
 
 root.mainloop()
+
