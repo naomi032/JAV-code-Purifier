@@ -39,7 +39,7 @@ JAV Code Purifier is a Python-based application that helps you organize your JAV
 1. Ensure you have Python 3.6 or higher installed.
 2. Clone this repository:
    ```
-   git clone https://github.com/yourusername/JAV-code-Purifier.git
+   git clone https://github.com/naomi032/JAV-code-Purifier.git
    ```
 3. Navigate to the project directory:
    ```
@@ -82,7 +82,7 @@ JAV 代码净化器是一个基于 Python 的应用程序,通过自动化重命�
 1. 确保您已安装 Python 3.6 或更高版本。
 2. 克隆此仓库:
    ```
-   git clone https://github.com/yourusername/JAV-code-Purifier.git
+   git clone https://github.com/naomi032/JAV-code-Purifier.git
    ```
 3. 进入项目目录:
    ```
@@ -111,7 +111,3 @@ JAV 代码净化器是一个基于 Python 的应用程序,通过自动化重命�
 #### 许可证
 
 本项目采用 MIT 许可证 - 有关详细信息,请参阅 [LICENSE](LICENSE) 文件。
-
----
-
-这个 About 和 README 提供了项目的概述、主要特性、安装说明、使用方法以及贡献指南。您可以根据需要进行修改或扩展。确保在 GitHub 仓库中包含一个 LICENSE 文件,详细说明项目的许可条款。
