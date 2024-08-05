@@ -1,86 +1,119 @@
-JAV Code Purifier / JAV 代码净化器
-About / 关于
+当然,我很乐意为您准备这个程序的 About 和 README 部分,包括中英文版本。以下是建议的内容:
+
+---
+
+# JAV Code Purifier / JAV 代码净化器
+
+## About / 关于
+
 English:
 JAV Code Purifier is a powerful and user-friendly tool designed to simplify the process of renaming JAV (Japanese Adult Video) files. It helps users maintain a clean and organized media library by automating the file renaming process based on industry-standard naming conventions.
-Key Features:
 
-Batch renaming of files
-Customizable renaming rules
-Preview before renaming
-Undo functionality
-Dark mode interface
-History tracking
+Key Features:
+- Batch renaming of files
+- Customizable renaming rules
+- Preview before renaming
+- Undo functionality
+- Dark mode interface
+- History tracking
 
 中文:
 JAV 代码净化器是一个功能强大且用户友好的工具,旨在简化 JAV(日本成人视频)文件的重命名过程。它通过基于行业标准命名惯例自动化文件重命名过程,帮助用户维护一个干净和有组织的媒体库。
+
 主要特点:
+- 批量重命名文件
+- 可自定义的重命名规则
+- 重命名前预览
+- 撤销功能
+- 暗黑模式界面
+- 历史记录跟踪
 
-批量重命名文件
-可自定义的重命名规则
-重命名前预览
-撤销功能
-暗黑模式界面
-历史记录跟踪
+## README
 
-README
 English:
-JAV Code Purifier
+
+### JAV Code Purifier
+
 JAV Code Purifier is a Python-based application that helps you organize your JAV file collection by automating the renaming process.
-Installation
 
-Ensure you have Python 3.6 or higher installed.
-Clone this repository:
-Copygit clone https://github.com/yourusername/JAV-code-Purifier.git
+#### Installation
 
-Navigate to the project directory:
-Copycd JAV-code-Purifier
+1. Ensure you have Python 3.6 or higher installed.
+2. Clone this repository:
+   ```
+   git clone https://github.com/yourusername/JAV-code-Purifier.git
+   ```
+3. Navigate to the project directory:
+   ```
+   cd JAV-code-Purifier
+   ```
+4. Install the required dependencies:
+   ```
+   pip install -r requirements.txt
+   ```
 
-Install the required dependencies:
-Copypip install -r requirements.txt
+#### Usage
 
+1. Run the application:
+   ```
+   python JAV-code-Purifier.py
+   ```
+2. Select the folder containing your JAV files.
+3. Customize the renaming options as needed.
+4. Preview the changes.
+5. Click "Start Renaming" to apply the changes.
 
-Usage
+#### Contributing
 
-Run the application:
-Copypython JAV-code-Purifier.py
-
-Select the folder containing your JAV files.
-Customize the renaming options as needed.
-Preview the changes.
-Click "Start Renaming" to apply the changes.
-
-Contributing
 Contributions are welcome! Please feel free to submit a Pull Request.
-License
-This project is licensed under the MIT License - see the LICENSE file for details.
+
+#### License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+---
 
 中文:
-JAV 代码净化器
+
+### JAV 代码净化器
+
 JAV 代码净化器是一个基于 Python 的应用程序,通过自动化重命名过程帮助您组织 JAV 文件集合。
-安装
 
-确保您已安装 Python 3.6 或更高版本。
-克隆此仓库:
-Copygit clone https://github.com/yourusername/JAV-code-Purifier.git
+#### 安装
 
-进入项目目录:
-Copycd JAV-code-Purifier
+1. 确保您已安装 Python 3.6 或更高版本。
+2. 克隆此仓库:
+   ```
+   git clone https://github.com/yourusername/JAV-code-Purifier.git
+   ```
+3. 进入项目目录:
+   ```
+   cd JAV-code-Purifier
+   ```
+4. 安装所需依赖:
+   ```
+   pip install -r requirements.txt
+   ```
 
-安装所需依赖:
-Copypip install -r requirements.txt
+#### 使用方法
 
+1. 运行应用程序:
+   ```
+   python JAV-code-Purifier.py
+   ```
+2. 选择包含 JAV 文件的文件夹。
+3. 根据需要自定义重命名选项。
+4. 预览更改。
+5. 点击"开始重命名"应用更改。
 
-使用方法
+#### 贡献
 
-运行应用程序:
-Copypython JAV-code-Purifier.py
-
-选择包含 JAV 文件的文件夹。
-根据需要自定义重命名选项。
-预览更改。
-点击"开始重命名"应用更改。
-
-贡献
 欢迎贡献!请随时提交 Pull Request。
-许可证
-本项目采用 MIT 许可证 - 有关详细信息,请参阅 LICENSE 文件。
+
+#### 许可证
+
+本项目采用 MIT 许可证 - 有关详细信息,请参阅 [LICENSE](LICENSE) 文件。
+
+---
+
+这个 About 和 README 提供了项目的概述、主要特性、安装说明、使用方法以及贡献指南。您可以根据需要进行修改或扩展。确保在 GitHub 仓库中包含一个 LICENSE 文件,详细说明项目的许可条款。
