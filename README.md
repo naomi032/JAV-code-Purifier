@@ -1,6 +1,7 @@
 
 
 # JAV Code Purifier / JAV 番号净化器
+![slogan](https://github.com/user-attachments/assets/06c9873f-03e5-40a9-ae2e-f76a3d54fa24)
 
 ## About / 关于
 
@@ -40,7 +41,8 @@ JAV Code Purifier is a Python-based application that helps you organize your JAV
 2. Clone this repository:
    ```
    git clone https://github.com/naomi032/JAV-code-Purifier.git
-   ```
+   `![slogan](https://github.com/user-attachments/assets/dd49ffd9-a54f-49d9-bf1d-901ad47d2d15)
+``
 3. Navigate to the project directory:
    ```
    cd JAV-code-Purifier
