@@ -379,8 +379,16 @@ class FileRenamerUI:
         }
         save_state_to_file(state)
 
+    def on_closing(self):
+        try:
+            self.save_state()
+        except Exception as e:
+            print(f"Error saving state: {e}")
+        finally:
+            self.master.destroy()
+
 if __name__ == "__main__":
     root = tk.Tk()
     app = FileRenamerUI(root)
-    root.protocol("WM_DELETE_WINDOW", app.save_state)
+    root.protocol("WM_DELETE_WINDOW", app.on_closing)
     root.mainloop()
