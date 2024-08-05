@@ -1,6 +1,6 @@
 
 
-# JAV Code Purifier / JAV 代码净化器
+# JAV Code Purifier / JAV 番号净化器
 
 ## About / 关于
 
@@ -16,7 +16,7 @@ Key Features:
 - History tracking
 
 中文:
-JAV 代码净化器是一个功能强大且用户友好的工具,旨在简化 JAV(日本成人视频)文件的重命名过程。它通过基于行业标准命名惯例自动化文件重命名过程,帮助用户维护一个干净和有组织的媒体库。
+JAV 番号净化器是一个功能强大且用户友好的工具,旨在简化 JAV(日本成人视频)文件的重命名过程。它通过基于行业标准命名惯例自动化文件重命名过程,帮助用户维护一个干净和有组织的媒体库。
 
 主要特点:
 - 批量重命名文件
@@ -75,7 +75,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ### JAV 代码净化器
 
-JAV 代码净化器是一个基于 Python 的应用程序,通过自动化重命名过程帮助您组织 JAV 文件集合。
+JAV 番号净化器是一个基于 Python 的应用程序,通过自动化重命名过程帮助您组织 JAV 文件集合。
 
 #### 安装
 
