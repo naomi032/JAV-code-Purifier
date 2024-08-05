@@ -1,6 +1,4 @@
-当然,我很乐意为您准备这个程序的 About 和 README 部分,包括中英文版本。以下是建议的内容:
 
----
 
 # JAV Code Purifier / JAV 代码净化器
 
