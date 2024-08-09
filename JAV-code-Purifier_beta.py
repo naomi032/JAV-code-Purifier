@@ -8,6 +8,7 @@ from tkinter import filedialog, messagebox, Label, Menu, Toplevel, IntVar, BOTH,
 from tkinter.ttk import Frame, Label, Button, Treeview, Checkbutton, Style
 import subprocess
 import shutil
+import winreg
 
 # 常量定义
 CONFIG_FILE = 'config.ini'
@@ -166,6 +167,46 @@ class FileRenamerUI:
         self.statusbar = tk.Label(self.master, text="就绪", bd=1, relief=tk.SUNKEN, anchor=tk.W, bg='#2e2e2e', fg='#ffffff')
         self.statusbar.pack(side=tk.BOTTOM, fill=tk.X)
 
+    def get_default_app(self, file_extension):
+        try:
+            with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, file_extension) as key:
+                prog_id = winreg.QueryValue(key, None)
+            with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, f"{prog_id}\\shell\\open\\command") as key:
+                command = winreg.QueryValue(key, None)
+            return command.split('"')[1]
+        except:
+            return None
+
+    def extract_archives(self):
+        if not self.selected_folder:
+            messagebox.showwarning("警告", "请先选择一个文件夹")
+            return
+
+        archive_extensions = ('.zip', '.rar', '.7z')
+        extracted_count = 0
+
+        for filename in os.listdir(self.selected_folder):
+            file_path = os.path.join(self.selected_folder, filename)
+            file_ext = os.path.splitext(filename)[1].lower()
+
+            if file_ext in archive_extensions:
+                default_app = self.get_default_app(file_ext)
+                if default_app:
+                    try:
+                        subprocess.run([default_app, 'x', '-o:{}'.format(self.selected_folder), '-y', file_path],
+                                       shell=True)
+                        extracted_count += 1
+                    except subprocess.CalledProcessError:
+                        messagebox.showerror("错误", f"解压 {filename} 时出错")
+                else:
+                    messagebox.showerror("错误", f"未找到 {file_ext} 文件的默认解压程序")
+
+        if extracted_count > 0:
+            messagebox.showinfo("完成", f"已尝试解压 {extracted_count} 个压缩包")
+        else:
+            messagebox.showinfo("提示", "没有找到可以解压的文件")
+
+        self.refresh_preview()
     def setup_shortcuts(self):
         self.master.bind_all('<Control-z>', lambda event: self.undo_rename())
         self.master.bind_all('<F5>', lambda event: self.refresh_preview())
@@ -200,28 +241,7 @@ class FileRenamerUI:
 
         self.statusbar.config(text="预览完成")
 
-    def extract_archives(self):
-        if not self.selected_folder:
-            messagebox.showwarning("警告", "请先选择一个文件夹")
-            return
 
-        for filename in os.listdir(self.selected_folder):
-            file_path = os.path.join(self.selected_folder, filename)
-            if filename.endswith(('.zip', '.rar', '.7z')):
-                try:
-                    if filename.endswith('.zip'):
-                        subprocess.run(['unzip', file_path, '-d', self.selected_folder], check=True)
-                    elif filename.endswith('.rar'):
-                        subprocess.run(['unrar', 'x', file_path, self.selected_folder], check=True)
-                    elif filename.endswith('.7z'):
-                        subprocess.run(['7z', 'x', file_path, f'-o{self.selected_folder}'], check=True)
-                except subprocess.CalledProcessError:
-                    messagebox.showerror("错误", f"解压 {filename} 时出错")
-                except FileNotFoundError:
-                    messagebox.showerror("错误", "未找到解压程序，请确保系统中安装了相应的解压工具")
-
-        messagebox.showinfo("完成", "所有压缩包已解压")
-        self.refresh_preview()
 
     def delete_small_videos(self):
         if not self.selected_folder:
