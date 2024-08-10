@@ -17,6 +17,9 @@ import multiprocessing
 import concurrent.futures
 import atexit
 import asyncio
+import io
+import base64
+
 
 # 常量定义
 CONFIG_FILE = 'config.ini'
@@ -24,6 +27,26 @@ HISTORY_FILE = 'history.json'
 STATE_FILE = 'state.json'
 CUSTOM_RULES_FILE = 'custom_rules.json'
 logging.basicConfig(filename='renamer.log', level=logging.DEBUG)
+
+
+def create_icon(png_path, icon_sizes=[(16, 16), (32, 32), (48, 48), (64, 64)]):
+    with Image.open(png_path) as img:
+        icon_images = []
+        for size in icon_sizes:
+            resized_img = img.copy()
+            resized_img.thumbnail(size, Image.Resampling.LANCZOS)
+            icon_images.append(resized_img)
+
+        with io.BytesIO() as icon_bytes:
+            icon_images[0].save(icon_bytes, format='ICO', sizes=icon_sizes)
+            return icon_bytes.getvalue()
+
+
+def set_icon_from_png(window, png_path):
+    icon_data = create_icon(png_path)
+    icon_data_base64 = base64.b64encode(icon_data)
+    window.tk.call('wm', 'iconphoto', window._w, tk.PhotoImage(data=icon_data_base64))
+
 
 def load_custom_rules():
     if os.path.exists(CUSTOM_RULES_FILE):
