@@ -22,7 +22,18 @@ import asyncio
 CONFIG_FILE = 'config.ini'
 HISTORY_FILE = 'history.json'
 STATE_FILE = 'state.json'
+CUSTOM_RULES_FILE = 'custom_rules.json'
 logging.basicConfig(filename='renamer.log', level=logging.DEBUG)
+
+def load_custom_rules():
+    if os.path.exists(CUSTOM_RULES_FILE):
+        with open(CUSTOM_RULES_FILE, 'r') as f:
+            return json.load(f)
+    return []
+
+def save_custom_rules(rules):
+    with open(CUSTOM_RULES_FILE, 'w') as f:
+        json.dump(rules, f)
 
 def load_last_path():
     config = configparser.ConfigParser()
@@ -73,8 +84,8 @@ def save_state_to_file(state):
 class OptimizedFileRenamerUI:
     def __init__(self, master):
         self.master = master
-        self.master.title('文件重命名工具')
-        self.master.geometry('1200x700')
+        self.master.title('JAV-code-Purifier')
+        self.master.geometry('1300x1000')  # 增加宽度和高度
 
         self.style = ttk.Style(self.master)
         self.style.theme_use('clam')
@@ -86,6 +97,7 @@ class OptimizedFileRenamerUI:
         self.is_dark_mode = False
         self.rename_history = {}
         self.file_types_to_delete = {}
+        self.custom_rules = load_custom_rules()
 
         self.setup_ui()
         self.load_state()
@@ -97,28 +109,75 @@ class OptimizedFileRenamerUI:
     def setup_ui(self):
         self.create_menu()
 
-        # 创建主框架
-        main_paned = ttk.PanedWindow(self.master, orient=tk.HORIZONTAL)
-        main_paned.pack(fill=tk.BOTH, expand=True)
+        main_frame = ttk.Frame(self.master)
+        main_frame.pack(fill=tk.BOTH, expand=True)
 
-        # 左侧框架
-        left_frame = ttk.Frame(main_paned)
-        main_paned.add(left_frame, weight=3)
+        left_frame = ttk.Frame(main_frame)
+        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         self.create_folder_frame(left_frame)
         self.create_treeview(left_frame)
         self.create_options_frame(left_frame)
+
+        bottom_frame = ttk.Frame(left_frame)
+        bottom_frame.pack(fill=tk.BOTH, expand=True)
+
+        self.create_custom_rule_frame(bottom_frame)
+        self.create_preview_frame(bottom_frame)
+
         self.create_buttons_frame(left_frame)
-        self.configure_checkbox_style()
-
-        # 右侧预览框架
-        right_frame = ttk.Frame(main_paned)
-        main_paned.add(right_frame, weight=1)
-        self.create_preview_frame(right_frame)
-
         self.create_statusbar()
-        self.setup_shortcuts()
-        self.create_context_menu()
+
+    def create_custom_rule_frame(self, parent):
+        custom_rule_frame = ttk.LabelFrame(parent, text="自定义规则")
+        custom_rule_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        ttk.Label(custom_rule_frame, text="要替换的内容:").grid(row=0, column=0, padx=5, pady=5)
+        self.old_content_entry = ttk.Entry(custom_rule_frame)
+        self.old_content_entry.grid(row=0, column=1, padx=5, pady=5)
+
+        ttk.Label(custom_rule_frame, text="新内容:").grid(row=1, column=0, padx=5, pady=5)
+        self.new_content_entry = ttk.Entry(custom_rule_frame)
+        self.new_content_entry.grid(row=1, column=1, padx=5, pady=5)
+
+        ttk.Button(custom_rule_frame, text="创建规则", command=self.create_custom_rule).grid(row=2, column=0, columnspan=2, pady=5)
+
+        self.rules_listbox = tk.Listbox(custom_rule_frame, width=50, height=5)
+        self.rules_listbox.grid(row=3, column=0, columnspan=2, padx=5, pady=5)
+
+        ttk.Button(custom_rule_frame, text="删除规则", command=self.delete_custom_rule).grid(row=4, column=0, columnspan=2, pady=5)
+
+        self.update_rules_listbox()
+
+    def create_preview_frame(self, parent):
+        preview_frame = ttk.LabelFrame(parent, text="文件预览")
+        preview_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        self.preview_image = ttk.Label(preview_frame)
+        self.preview_image.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+    def create_custom_rule(self):
+        old_content = self.old_content_entry.get()
+        new_content = self.new_content_entry.get()
+        if old_content:
+            self.custom_rules.append((old_content, new_content))
+            self.update_rules_listbox()
+            self.old_content_entry.delete(0, tk.END)
+            self.new_content_entry.delete(0, tk.END)
+            save_custom_rules(self.custom_rules)
+
+    def delete_custom_rule(self):
+        selected = self.rules_listbox.curselection()
+        if selected:
+            index = selected[0]
+            del self.custom_rules[index]
+            self.update_rules_listbox()
+            save_custom_rules(self.custom_rules)
+
+    def update_rules_listbox(self):
+        self.rules_listbox.delete(0, tk.END)
+        for old, new in self.custom_rules:
+            self.rules_listbox.insert(tk.END, f"替换 '{old}' 为 '{new}'")
 
 
     def configure_checkbox_style(self):
@@ -170,16 +229,19 @@ class OptimizedFileRenamerUI:
 
     def create_treeview(self, parent):
         tree_frame = ttk.Frame(parent)
-        tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)  # 修改这行
 
         columns = ('原始文件名', '预览名称', '最终名称', '扩展名', '大小', '路径', '状态')
         self.tree = ttk.Treeview(tree_frame, columns=columns, show='headings')
 
         for col in columns:
             self.tree.heading(col, text=col)
-            self.tree.column(col, width=100)
+            if col in ['原始文件名', '预览名称', '最终名称', '路径']:
+                self.tree.column(col, width=200)
+            else:
+                self.tree.column(col, width=100)
 
-        self.tree.column('路径', width=200)
+        self.tree.column('路径', width=250)
 
         scrollbar_y = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.tree.yview)
         scrollbar_x = ttk.Scrollbar(tree_frame, orient=tk.HORIZONTAL, command=self.tree.xview)
@@ -218,27 +280,28 @@ class OptimizedFileRenamerUI:
             cb = ttk.Checkbutton(options_frame, text=text, variable=var, style='Custom.TCheckbutton')
             cb.pack(anchor=tk.W, padx=5, pady=2)
 
-
     def create_buttons_frame(self, parent):
         buttons_frame = ttk.Frame(parent)
         buttons_frame.pack(fill=tk.X, padx=10, pady=10)
 
-        self.start_button = ttk.Button(buttons_frame, text="开始重命名", command=self.start_renaming)
-        self.start_button.pack(side=tk.LEFT, padx=5)
-        self.start_button.state(['disabled'])
+        buttons = [
+            ("开始重命名", self.start_renaming),
+            ("取消", self.cancel_renaming),
+            ("刷新预览", self.refresh_preview),
+            ("解压文件", self.extract_archives),
+            ("删除小视频", self.delete_small_videos),
+            ("删除非视频文件", self.delete_non_video_files)
+        ]
 
-        ttk.Button(buttons_frame, text="取消", command=self.cancel_renaming).pack(side=tk.LEFT, padx=5)
-        ttk.Button(buttons_frame, text="刷新预览", command=self.refresh_preview).pack(side=tk.LEFT, padx=5)
-        ttk.Button(buttons_frame, text="解压文件", command=self.extract_archives).pack(side=tk.LEFT, padx=5)
-        ttk.Button(buttons_frame, text="删除小视频", command=self.delete_small_videos).pack(side=tk.LEFT, padx=5)
-        ttk.Button(buttons_frame, text="删除非视频文件", command=self.delete_non_video_files).pack(side=tk.LEFT, padx=5)
+        for i, (text, command) in enumerate(buttons):
+            button = ttk.Button(buttons_frame, text=text, command=command)
+            button.grid(row=0, column=i, padx=5, pady=5)
+            if text == "开始重命名":
+                self.start_button = button
+                self.start_button.state(['disabled'])
 
-    def create_preview_frame(self, parent):
-        preview_frame = ttk.LabelFrame(parent, text="文件预览")
-        preview_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        buttons_frame.grid_columnconfigure(tuple(range(len(buttons))), weight=1)
 
-        self.preview_image = ttk.Label(preview_frame)
-        self.preview_image.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
     def create_statusbar(self):
         self.statusbar = ttk.Label(self.master, text="就绪", relief=tk.SUNKEN, anchor=tk.W)
@@ -371,7 +434,22 @@ class OptimizedFileRenamerUI:
             if match:
                 name = match.group()
 
+        # 应用自定义规则
+        for old, new in self.custom_rules:
+            name = name.replace(old, new)
+
         return name
+
+    async def process_directory_async(self, directory):
+        files = []
+        for root, dirs, filenames in os.walk(directory):
+            for filename in filenames:
+                files.append((root, filename))
+
+        loop = asyncio.get_event_loop()
+        results = await loop.run_in_executor(self.executor,
+                                             lambda: list(map(self.process_file, files)))
+        self.master.after(0, self.update_treeview, results)
 
     def process_directory(self, directory, parent=''):
         for root, dirs, files in os.walk(directory):
@@ -635,47 +713,68 @@ class OptimizedFileRenamerUI:
 
     def toggle_dark_mode(self):
         self.is_dark_mode = not self.is_dark_mode
-        if self.is_dark_mode:
-            self.style.theme_use('equilux')
-        else:
-            self.style.theme_use('clam')
+        theme = 'equilux' if self.is_dark_mode else 'clam'
+        self.style.theme_use(theme)
 
-        self.update_colors()
+        # 使用异步方法更新颜色
+        self.master.after(10, self.async_update_colors)
 
+    def async_update_colors(self):
+        asyncio.run(self.update_colors())
 
-    def update_colors(self):
+    async def update_colors(self):
         bg_color = '#2e2e2e' if self.is_dark_mode else '#f0f0f0'
         fg_color = '#ffffff' if self.is_dark_mode else '#000000'
 
-        style = self.style
-        style.configure('TFrame', background=bg_color)
-        style.configure('TLabel', background=bg_color, foreground=fg_color)
-        style.configure('TButton', background=bg_color, foreground=fg_color)
-        style.configure('Treeview', background=bg_color, foreground=fg_color, fieldbackground=bg_color)
-        style.configure('Treeview.Heading', background=bg_color, foreground=fg_color)
-        style.configure('Custom.TCheckbutton', background=bg_color, foreground=fg_color)
-        style.map('Custom.TCheckbutton',
-                  background=[('active', '#3a3a3a' if self.is_dark_mode else '#e5e5e5')],
-                  foreground=[('disabled', '#6c6c6c' if self.is_dark_mode else '#a3a3a3')])
+        # 批量更新样式
+        style_updates = {
+            'TFrame': {'background': bg_color},
+            'TLabel': {'background': bg_color, 'foreground': fg_color},
+            'TButton': {'background': bg_color, 'foreground': fg_color},
+            'Treeview': {'background': bg_color, 'foreground': fg_color, 'fieldbackground': bg_color},
+            'Treeview.Heading': {'background': bg_color, 'foreground': fg_color},
+            'Custom.TCheckbutton': {'background': bg_color, 'foreground': fg_color},
+        }
 
-        # 更新主窗口和所有子窗口的背景色
-        self.master.configure(background=bg_color)
-        for child in self.master.winfo_children():
+        for style, options in style_updates.items():
+            self.style.configure(style, **options)
+
+        # 更新 Checkbutton 的 map
+        self.style.map('Custom.TCheckbutton',
+                       background=[('active', '#3a3a3a' if self.is_dark_mode else '#e5e5e5')],
+                       foreground=[('disabled', '#6c6c6c' if self.is_dark_mode else '#a3a3a3')])
+
+        # 配置自定义 widget 样式
+        self.style.configure('Custom.TWidget', background=bg_color, foreground=fg_color)
+
+        # 异步更新主窗口和子窗口
+        await self.async_update_widgets(self.master, bg_color, fg_color)
+
+    async def async_update_widgets(self, parent, bg_color, fg_color):
+        try:
+            parent.configure(background=bg_color)
+        except tk.TclError:
+            pass  # 忽略不支持背景色设置的小部件
+
+        for child in parent.winfo_children():
             try:
-                child.configure(background=bg_color)
+                if isinstance(child, (ttk.Widget, tk.Canvas)):
+                    child.configure(style='Custom.TWidget')
+                else:
+                    child.configure(background=bg_color)
+
+                if isinstance(child, tk.Text):
+                    child.configure(foreground=fg_color)
             except tk.TclError:
-                pass  # 忽略不支持背景色设置的小部件
+                pass  # 忽略不支持背景色或前景色设置的小部件
 
-    async def process_directory_async(self, directory):
-        files = []
-        for root, dirs, filenames in os.walk(directory):
-            for filename in filenames:
-                files.append((root, filename))
+            if child.winfo_children():
+                await self.async_update_widgets(child, bg_color, fg_color)
 
-        loop = asyncio.get_event_loop()
-        results = await loop.run_in_executor(self.executor,
-                                             lambda: list(map(self.process_file, files)))
-        self.master.after(0, self.update_treeview, results)
+            await asyncio.sleep(0)  # 让出控制权，避免长时间阻塞
+
+
+
 
 
 
