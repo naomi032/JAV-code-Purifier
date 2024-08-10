@@ -4,13 +4,19 @@ import json
 import configparser
 import webbrowser
 import tkinter as tk
-from tkinter import filedialog, messagebox, Label, Menu, Toplevel, IntVar, BOTH, X, RIGHT, Y
-from tkinter.ttk import Frame, Label, Button, Treeview, Checkbutton, Style
+from tkinter import filedialog, messagebox, ttk
+from PIL import Image, ImageTk
 import subprocess
 import shutil
 import winreg
 import logging
-from PIL import Image, ImageTk
+from ttkthemes import ThemedTk
+from datetime import datetime
+import threading
+import multiprocessing
+import concurrent.futures
+import atexit
+import asyncio
 
 # 常量定义
 CONFIG_FILE = 'config.ini'
@@ -63,198 +69,191 @@ def save_state_to_file(state):
     with open(STATE_FILE, 'w') as file:
         json.dump(state, file, indent=4)
 
-class FileRenamerUI:
+
+class OptimizedFileRenamerUI:
     def __init__(self, master):
-        self.file_paths = {}
         self.master = master
         self.master.title('文件重命名工具')
         self.master.geometry('1200x700')
 
-        self.style = Style()
-        self.style.theme_use('default')
-        self.configure_dark_theme()
-
+        self.style = ttk.Style(self.master)
+        self.style.theme_use('clam')
+        self.executor = concurrent.futures.ThreadPoolExecutor()
+        atexit.register(self.executor.shutdown)
+        self.is_shutting_down = False
         self.selected_folder = None
+        self.file_paths = {}
+        self.is_dark_mode = False
+        self.rename_history = {}
+        self.file_types_to_delete = {}
+
         self.setup_ui()
         self.load_state()
-
-    def configure_dark_theme(self):
-        self.master.configure(bg='#2e2e2e')
-        self.style.configure('TFrame', background='#2e2e2e')
-        self.style.configure('TLabel', background='#2e2e2e', foreground='#ffffff')
-        self.style.configure('TButton', background='#444444', foreground='#ffffff')
-        self.style.configure('Treeview', background='#2e2e2e', foreground='#ffffff', fieldbackground='#2e2e2e')
-        self.style.configure('Treeview.Heading', background='#444444', foreground='#ffffff')
-        self.style.configure('TButton', padding=(10, 5), relief="flat", background='#0067C0', foreground='white')
-        self.style.map('TButton', background=[('active', '#0078D4')])
+        self.style.configure("Custom.TCheckbutton", background="#f0f0f0", foreground="#000000")
+        self.style.map("Custom.TCheckbutton",
+                       background=[('active', '#e5e5e5')],
+                       foreground=[('disabled', '#a3a3a3')])
 
     def setup_ui(self):
         self.create_menu()
 
         # 创建主框架
-        main_frame = Frame(self.master)
-        main_frame.pack(fill=BOTH, expand=True)
+        main_paned = ttk.PanedWindow(self.master, orient=tk.HORIZONTAL)
+        main_paned.pack(fill=tk.BOTH, expand=True)
 
         # 左侧框架
-        left_frame = Frame(main_frame)
-        left_frame.pack(side='left', fill=BOTH, expand=True)
+        left_frame = ttk.Frame(main_paned)
+        main_paned.add(left_frame, weight=3)
 
         self.create_folder_frame(left_frame)
         self.create_treeview(left_frame)
         self.create_options_frame(left_frame)
         self.create_buttons_frame(left_frame)
+        self.configure_checkbox_style()
 
         # 右侧预览框架
-        right_frame = Frame(main_frame, width=300)
-        right_frame.pack(side='right', fill=Y)
+        right_frame = ttk.Frame(main_paned)
+        main_paned.add(right_frame, weight=1)
         self.create_preview_frame(right_frame)
 
         self.create_statusbar()
         self.setup_shortcuts()
+        self.create_context_menu()
+
+
+    def configure_checkbox_style(self):
+        # 配置复选框样式
+        self.style.configure("TCheckbutton", background="#f0f0f0", foreground="#000000")
+        self.style.map("TCheckbutton",
+                       background=[('active', '#e5e5e5')],
+                       foreground=[('disabled', '#a3a3a3')])
+
+
+
+    def create_context_menu(self):
+        self.context_menu = tk.Menu(self.master, tearoff=0)
+        self.context_menu.add_command(label="重命名", command=self.rename_selected_file)
+        self.context_menu.add_command(label="删除", command=self.delete_selected_file)
+        self.context_menu.add_command(label="查看重命名历史", command=self.show_file_rename_history)
 
     def create_menu(self):
-        menu = Menu(self.master, bg='#444444', fg='#ffffff')
-        self.master.config(menu=menu)
+        menubar = tk.Menu(self.master)
+        self.master.config(menu=menubar)
 
-        file_menu = Menu(menu, tearoff=0, bg='#444444', fg='#ffffff')
-        menu.add_cascade(label='文件', menu=file_menu)
-        file_menu.add_command(label='选择文件夹', command=self.select_folder)
-        file_menu.add_command(label='重命名选中项', command=self.rename_selected_file)
-        file_menu.add_command(label='删除选中项', command=self.delete_selected_file)
-        file_menu.add_separator()
-        file_menu.add_command(label='退出', command=self.master.quit)
+        file_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="文件", menu=file_menu)
+        file_menu.add_command(label="选择文件夹", command=self.select_folder)
+        file_menu.add_command(label="退出", command=self.master.quit)
 
-        edit_menu = Menu(menu, tearoff=0, bg='#444444', fg='#ffffff')
-        menu.add_cascade(label='编辑', menu=edit_menu)
-        edit_menu.add_command(label='撤销重命名', command=self.undo_rename)
-        edit_menu.add_command(label='重命名选中项', command=self.rename_selected_file)
-        edit_menu.add_command(label='删除选中项', command=self.delete_selected_file)
+        edit_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="编辑", menu=edit_menu)
+        edit_menu.add_command(label="撤销重命名", command=self.undo_rename)
 
-        view_menu = Menu(menu, tearoff=0, bg='#444444', fg='#ffffff')
-        menu.add_cascade(label='查看', menu=view_menu)
-        view_menu.add_command(label='重命名历史', command=self.show_history)
+        view_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="查看", menu=view_menu)
+        view_menu.add_command(label="重命名历史", command=self.show_history)
+        view_menu.add_checkbutton(label="暗黑模式", command=self.toggle_dark_mode)
 
-        help_menu = Menu(menu, tearoff=0, bg='#444444', fg='#ffffff')
-        menu.add_cascade(label='帮助', menu=help_menu)
-        help_menu.add_command(label='帮助', command=self.open_help)
-
-    def create_preview_frame(self, parent):
-        preview_frame = Frame(parent)
-        preview_frame.pack(fill=BOTH, expand=True)
-
-        preview_label = Label(preview_frame, text="预览图片", style='TLabel')
-        preview_label.pack(pady=10)
-
-        self.preview_image = Label(preview_frame)
-        self.preview_image.pack(fill=BOTH, expand=True, padx=10, pady=10)
-
+        help_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="帮助", menu=help_menu)
+        help_menu.add_command(label="关于", command=self.show_about)
 
     def create_folder_frame(self, parent):
-        self.folder_frame = Frame(parent)
-        self.folder_frame.pack(fill=X, padx=10, pady=10)
-        self.folder_label = Label(self.folder_frame, text='未选择文件夹', style='TLabel')
-        self.folder_label.pack(side='left')
+        folder_frame = ttk.Frame(parent)
+        folder_frame.pack(fill=tk.X, padx=10, pady=10)
 
+        self.folder_label = ttk.Label(folder_frame, text="未选择文件夹")
+        self.folder_label.pack(side=tk.LEFT)
+
+        select_button = ttk.Button(folder_frame, text="选择文件夹", command=self.select_folder)
+        select_button.pack(side=tk.RIGHT)
 
     def create_treeview(self, parent):
+        tree_frame = ttk.Frame(parent)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
         columns = ('原始文件名', '预览名称', '最终名称', '扩展名', '大小', '路径', '状态')
-        self.tree = Treeview(parent, columns=columns, show='headings', selectmode='extended', style='Treeview')
+        self.tree = ttk.Treeview(tree_frame, columns=columns, show='headings')
+
         for col in columns:
             self.tree.heading(col, text=col)
-            if col == '大小':
-                self.tree.column(col, width=100)
-            elif col == '路径':
-                self.tree.column(col, width=200)
-        self.tree.pack(fill=BOTH, expand=True, padx=10, pady=10)
+            self.tree.column(col, width=100)
+
+        self.tree.column('路径', width=200)
+
+        scrollbar_y = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.tree.yview)
+        scrollbar_x = ttk.Scrollbar(tree_frame, orient=tk.HORIZONTAL, command=self.tree.xview)
+        self.tree.configure(yscroll=scrollbar_y.set, xscroll=scrollbar_x.set)
+
+        self.tree.grid(row=0, column=0, sticky='nsew')
+        scrollbar_y.grid(row=0, column=1, sticky='ns')
+        scrollbar_x.grid(row=1, column=0, sticky='ew')
+
+        tree_frame.grid_rowconfigure(0, weight=1)
+        tree_frame.grid_columnconfigure(0, weight=1)
 
         self.tree.bind("<<TreeviewSelect>>", self.on_treeview_select)
         self.tree.bind("<Button-3>", self.on_treeview_right_click)
         self.tree.bind("<Double-1>", self.on_treeview_double_click)
 
-
     def create_options_frame(self, parent):
-        self.options_frame = Frame(parent)
-        self.options_frame.pack(fill=X, padx=10, pady=10)
+        options_frame = ttk.LabelFrame(parent, text="重命名选项")
+        options_frame.pack(fill=tk.X, padx=10, pady=10)
 
-        self.replace_00_var = IntVar(value=1)
-        self.remove_prefix_var = IntVar(value=1)
-        self.remove_hhb_var = IntVar(value=1)
-        self.retain_digits_var = IntVar(value=1)
-        self.retain_format_var = IntVar(value=1)
+        self.replace_00_var = tk.BooleanVar(value=True)
+        self.remove_prefix_var = tk.BooleanVar(value=True)
+        self.remove_hhb_var = tk.BooleanVar(value=True)
+        self.retain_digits_var = tk.BooleanVar(value=True)
+        self.retain_format_var = tk.BooleanVar(value=True)
 
-        Checkbutton(self.options_frame, text="替换第一个 '00'", variable=self.replace_00_var).pack(side='left', padx=5)
-        Checkbutton(self.options_frame, text="删除特定前缀", variable=self.remove_prefix_var).pack(side='left', padx=5)
-        Checkbutton(self.options_frame, text="删除 'hhb' 及其后续内容", variable=self.remove_hhb_var).pack(side='left', padx=5)
-        Checkbutton(self.options_frame, text="保留横杠后的三位数字", variable=self.retain_digits_var).pack(side='left', padx=5)
-        Checkbutton(self.options_frame, text="保留 xxx-yyy 格式", variable=self.retain_format_var).pack(side='left', padx=5)
+        options = [
+            ("替换第一个 '00'", self.replace_00_var),
+            ("删除特定前缀", self.remove_prefix_var),
+            ("删除 'hhb' 及其后续内容", self.remove_hhb_var),
+            ("保留横杠后的三位数字", self.retain_digits_var),
+            ("保留 xxx-yyy 格式", self.retain_format_var)
+        ]
+
+        for text, var in options:
+            cb = ttk.Checkbutton(options_frame, text=text, variable=var, style='Custom.TCheckbutton')
+            cb.pack(anchor=tk.W, padx=5, pady=2)
+
 
     def create_buttons_frame(self, parent):
-        self.buttons_frame = Frame(parent)
-        self.buttons_frame.pack(fill=X, padx=10, pady=10)
-        self.start_button = Button(self.buttons_frame, text='开始重命名', command=self.start_renaming, style='TButton')
-        self.start_button.pack(side='left', padx=5)
-        self.start_button.config(state="disabled")
-        Button(self.buttons_frame, text='取消', command=self.cancel_renaming, style='TButton').pack(side='left', padx=5)
-        Button(self.buttons_frame, text='刷新预览', command=self.refresh_preview, style='TButton').pack(side='left', padx=5)
-        Button(self.buttons_frame, text='解压文件', command=self.extract_archives, style='TButton').pack(side='left', padx=5)
-        Button(self.buttons_frame, text='删除小视频', command=self.delete_small_videos, style='TButton').pack(side='left', padx=5)
-        Button(self.buttons_frame, text='删除非视频文件', command=self.delete_non_video_files, style='TButton').pack(side='left', padx=5)
+        buttons_frame = ttk.Frame(parent)
+        buttons_frame.pack(fill=tk.X, padx=10, pady=10)
+
+        self.start_button = ttk.Button(buttons_frame, text="开始重命名", command=self.start_renaming)
+        self.start_button.pack(side=tk.LEFT, padx=5)
+        self.start_button.state(['disabled'])
+
+        ttk.Button(buttons_frame, text="取消", command=self.cancel_renaming).pack(side=tk.LEFT, padx=5)
+        ttk.Button(buttons_frame, text="刷新预览", command=self.refresh_preview).pack(side=tk.LEFT, padx=5)
+        ttk.Button(buttons_frame, text="解压文件", command=self.extract_archives).pack(side=tk.LEFT, padx=5)
+        ttk.Button(buttons_frame, text="删除小视频", command=self.delete_small_videos).pack(side=tk.LEFT, padx=5)
+        ttk.Button(buttons_frame, text="删除非视频文件", command=self.delete_non_video_files).pack(side=tk.LEFT, padx=5)
+
+    def create_preview_frame(self, parent):
+        preview_frame = ttk.LabelFrame(parent, text="文件预览")
+        preview_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        self.preview_image = ttk.Label(preview_frame)
+        self.preview_image.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
     def create_statusbar(self):
-        self.statusbar = tk.Label(self.master, text="就绪", bd=1, relief=tk.SUNKEN, anchor=tk.W, bg='#2e2e2e', fg='#ffffff')
+        self.statusbar = ttk.Label(self.master, text="就绪", relief=tk.SUNKEN, anchor=tk.W)
         self.statusbar.pack(side=tk.BOTTOM, fill=tk.X)
 
-
-    def get_default_app(self, file_extension):
-        try:
-            with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, file_extension) as key:
-                prog_id = winreg.QueryValue(key, None)
-            with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, f"{prog_id}\\shell\\open\\command") as key:
-                command = winreg.QueryValue(key, None)
-            return command.split('"')[1]
-        except:
-            return None
-
-    def extract_archives(self):
-        if not self.selected_folder:
-            messagebox.showwarning("警告", "请先选择一个文件夹")
-            return
-
-        archive_extensions = ('.zip', '.rar', '.7z')
-        extracted_count = 0
-
-        for filename in os.listdir(self.selected_folder):
-            file_path = os.path.join(self.selected_folder, filename)
-            file_ext = os.path.splitext(filename)[1].lower()
-
-            if file_ext in archive_extensions:
-                default_app = self.get_default_app(file_ext)
-                if default_app:
-                    try:
-                        subprocess.run([default_app, 'x', '-o:{}'.format(self.selected_folder), '-y', file_path],
-                                       shell=True)
-                        extracted_count += 1
-                    except subprocess.CalledProcessError:
-                        messagebox.showerror("错误", f"解压 {filename} 时出错")
-                else:
-                    messagebox.showerror("错误", f"未找到 {file_ext} 文件的默认解压程序")
-
-        if extracted_count > 0:
-            messagebox.showinfo("完成", f"已尝试解压 {extracted_count} 个压缩包")
-        else:
-            messagebox.showinfo("提示", "没有找到可以解压的文件")
-
-        self.refresh_preview()
     def setup_shortcuts(self):
-        self.master.bind_all('<Control-z>', lambda event: self.undo_rename())
-        self.master.bind_all('<F5>', lambda event: self.refresh_preview())
+        self.master.bind('<Control-z>', lambda event: self.undo_rename())
+        self.master.bind('<F5>', lambda event: self.refresh_preview())
 
     def select_folder(self):
         self.selected_folder = filedialog.askdirectory()
         if self.selected_folder:
-            self.folder_label.config(text=f'选择文件夹: {self.selected_folder}')
+            self.folder_label.config(text=f"选择文件夹: {self.selected_folder}")
             self.preview_files()
-            self.start_button.config(state="normal")
+            self.start_button.state(['!disabled'])
             save_last_path(self.selected_folder)
 
     def preview_files(self):
@@ -268,10 +267,9 @@ class FileRenamerUI:
             self.tree.delete(item)
 
         self.file_paths.clear()
-        self.process_directory(self.selected_folder)
 
-        self.statusbar.config(text="预览完成")
-
+        # 使用线程处理文件预览
+        threading.Thread(target=self.process_directory_thread, args=(self.selected_folder,)).start()
 
 
     def delete_small_videos(self):
@@ -298,24 +296,57 @@ class FileRenamerUI:
             return
 
         video_extensions = ('.mp4', '.avi', '.mkv', '.mov', '.wmv')
-        archive_extensions = ('.zip', '.rar', '.7z')
         bluray_extensions = ('.iso', '.m2ts', '.bdmv', '.mpls', '.clpi', '.bdjo', '.jar')
-        keep_extensions = video_extensions + archive_extensions + bluray_extensions
-        deleted_count = 0
+        keep_extensions = video_extensions + bluray_extensions
 
-        for filename in os.listdir(self.selected_folder):
-            file_path = os.path.join(self.selected_folder, filename)
-            if os.path.isfile(file_path) and not filename.lower().endswith(keep_extensions):
+        file_types = set()
+        for root, dirs, files in os.walk(self.selected_folder):
+            for file in files:
+                if not file.lower().endswith(keep_extensions):
+                    ext = os.path.splitext(file)[1].lower()
+                    file_types.add(ext)
+
+        if not file_types:
+            messagebox.showinfo("提示", "没有找到需要删除的非视频文件")
+            return
+
+        delete_options = tk.Toplevel(self.master)
+        delete_options.title("选择要删除的文件类型")
+        delete_options.geometry("300x400")
+
+        for file_type in file_types:
+            var = tk.BooleanVar(value=True)
+            self.file_types_to_delete[file_type] = var
+            cb = ttk.Checkbutton(delete_options, text=file_type, variable=var, style='Custom.TCheckbutton')
+            cb.pack(anchor=tk.W, padx=5, pady=2)
+
+        ttk.Button(delete_options, text="确认删除", command=self.perform_delete).pack(pady=10)
+
+    def perform_delete(self):
+        selected_types = [ext for ext, var in self.file_types_to_delete.items() if var.get()]
+        files_to_delete = []
+
+        for root, dirs, files in os.walk(self.selected_folder):
+            for file in files:
+                if os.path.splitext(file)[1].lower() in selected_types:
+                    files_to_delete.append(os.path.join(root, file))
+
+        if not files_to_delete:
+            messagebox.showinfo("提示", "没有找到需要删除的文件")
+            return
+
+        if messagebox.askyesno("确认删除", f"将要删除 {len(files_to_delete)} 个文件。是否继续？"):
+            deleted_count = 0
+            for file_path in files_to_delete:
                 try:
                     os.remove(file_path)
                     deleted_count += 1
-                except PermissionError:
-                    messagebox.showerror("错误", f"无法删除 {filename}：权限被拒绝")
                 except Exception as e:
-                    messagebox.showerror("错误", f"删除 {filename} 时发生错误：{str(e)}")
+                    messagebox.showerror("错误", f"删除 {file_path} 时发生错误：{str(e)}")
 
-        messagebox.showinfo("完成", f"已删除 {deleted_count} 个非视频、非压缩包和非原盘文件")
-        self.refresh_preview()
+            messagebox.showinfo("完成", f"已删除 {deleted_count} 个文件")
+            self.refresh_preview()
+
     def process_filename(self, name):
         name = re.sub(r'[<>:"/\\|?*]', '', name)
         if self.remove_prefix_var.get():
@@ -361,6 +392,28 @@ class FileRenamerUI:
                 self.tree.insert("", "end", values=(original_name, preview_name, final_name, ext, file_size, relative_path, '未修改'), tags=('checked',))
                 self.file_paths[full_path] = True
 
+    def process_directory_thread(self, directory):
+        if self.is_shutting_down:
+            return
+        asyncio.run(self.process_directory_async(directory))
+
+
+    def process_file(self, file_info):
+        root, filename = file_info
+        full_path = os.path.join(root, filename)
+        relative_path = os.path.relpath(root, self.selected_folder)
+        name, ext = os.path.splitext(filename)
+        new_name = self.process_filename(name)
+        preview_name = new_name + ext
+        final_name = preview_name
+        file_size = self.get_file_size(full_path)
+        return (filename, preview_name, final_name, ext, file_size, relative_path, '未修改')
+
+    def update_treeview(self, results):
+        for result in results:
+            self.tree.insert("", "end", values=result, tags=('checked',))
+        self.statusbar.config(text="预览完成")
+
     def get_file_size(self, file_path):
         size = os.path.getsize(file_path)
         if size < 1024:
@@ -371,6 +424,47 @@ class FileRenamerUI:
             return f"{size/(1024*1024):.2f} MB"
         else:
             return f"{size/(1024*1024*1024):.2f} GB"
+
+    def extract_archives(self):
+        if not self.selected_folder:
+            messagebox.showwarning("警告", "请先选择一个文件夹")
+            return
+
+        archive_extensions = ('.zip', '.rar', '.7z')
+        extracted_count = 0
+
+        for filename in os.listdir(self.selected_folder):
+            file_path = os.path.join(self.selected_folder, filename)
+            file_ext = os.path.splitext(filename)[1].lower()
+
+            if file_ext in archive_extensions:
+                default_app = self.get_default_app(file_ext)
+                if default_app:
+                    try:
+                        subprocess.run([default_app, 'x', '-o:{}'.format(self.selected_folder), '-y', file_path],
+                                       shell=True)
+                        extracted_count += 1
+                    except subprocess.CalledProcessError:
+                        messagebox.showerror("错误", f"解压 {filename} 时出错")
+                else:
+                    messagebox.showerror("错误", f"未找到 {file_ext} 文件的默认解压程序")
+
+        if extracted_count > 0:
+            messagebox.showinfo("完成", f"已尝试解压 {extracted_count} 个压缩包")
+        else:
+            messagebox.showinfo("提示", "没有找到可以解压的文件")
+
+        self.refresh_preview()
+
+    def get_default_app(self, file_extension):
+        try:
+            with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, file_extension) as key:
+                prog_id = winreg.QueryValue(key, None)
+            with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, f"{prog_id}\\shell\\open\\command") as key:
+                command = winreg.QueryValue(key, None)
+            return command.split('"')[1]
+        except:
+            return None
 
 
     def start_renaming(self):
@@ -394,21 +488,22 @@ class FileRenamerUI:
                 new_path = os.path.join(self.selected_folder, relative_path, final_name)
 
                 if not os.path.exists(original_path):
-                    self.tree.set(item, 'status', f'错误: 文件不存在')
+                    self.tree.set(item, column='状态', value='错误: 文件不存在')
                     continue
 
                 if not os.access(os.path.dirname(original_path), os.W_OK):
-                    self.tree.set(item, 'status', f'错误: 没有写入权限')
+                    self.tree.set(item, column='状态', value='错误: 没有写入权限')
                     continue
 
                 try:
                     os.rename(original_path, new_path)
-                    self.tree.set(item, 'status', '已重命名')
+                    self.tree.set(item, column='状态', value='已重命名')
                     rename_history.append([original_path, new_path])
+                    self.add_rename_history(original_path, new_path)
                     logging.info(f"Renamed: {original_path} to {new_path}")
                 except Exception as e:
                     error_msg = f'错误: {str(e)}'
-                    self.tree.set(item, 'status', error_msg)
+                    self.tree.set(item, column='状态', value=error_msg)
                     logging.error(f"Error renaming {original_path}: {str(e)}")
 
         if rename_history:
@@ -419,6 +514,12 @@ class FileRenamerUI:
             messagebox.showinfo("提示", "没有文件被重命名")
 
         self.preview_files()
+
+    def add_rename_history(self, original_path, new_path):
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        if original_path not in self.rename_history:
+            self.rename_history[original_path] = []
+        self.rename_history[original_path].append((timestamp, new_path))
 
     def cancel_renaming(self):
         self.selected_folder = None
@@ -489,24 +590,98 @@ class FileRenamerUI:
 
     def show_history(self):
         history_list = load_history()
-
         if not history_list:
             messagebox.showinfo("历史记录", "没有历史记录")
             return
 
-        history_window = Toplevel(self.master)
-        history_window.title("历史记录")
-        history_window.geometry("600x400")
+        history_window = tk.Toplevel(self.master)
+        history_window.title("重命名历史")
+        history_window.geometry("800x600")
 
-        style = Style(history_window)
-        style.configure("History.TLabel", background='#2e2e2e', foreground='#ffffff')
+        history_tree = ttk.Treeview(history_window, columns=("原始文件名", "重命名后"), show="headings")
+        history_tree.heading("原始文件名", text="原始文件名")
+        history_tree.heading("重命名后", text="重命名后")
 
-        history_text = "\n".join([f"原始文件名: {entry[0]} -> 重命名后: {entry[1]}" for entry in history_list])
+        for entry in history_list:
+            history_tree.insert("", "end", values=(entry[0], entry[1]))
 
-        label = Label(history_window, text=history_text, anchor='w', justify='left', style="History.TLabel")
-        label.pack(fill=BOTH, expand=True, padx=10, pady=10)
+        history_tree.pack(fill=tk.BOTH, expand=True)
 
-        history_window.configure(bg='#2e2e2e')
+    def show_file_rename_history(self):
+        selected_items = self.tree.selection()
+        if not selected_items:
+            messagebox.showwarning("警告", "请选择一个文件")
+            return
+
+        item = selected_items[0]
+        values = self.tree.item(item, 'values')
+        original_name, _, _, _, _, relative_path, _ = values
+        file_path = os.path.join(self.selected_folder, relative_path, original_name)
+
+        if file_path in self.rename_history:
+            history_window = tk.Toplevel(self.master)
+            history_window.title(f"重命名历史 - {original_name}")
+            history_window.geometry("600x400")
+
+            history_tree = ttk.Treeview(history_window, columns=("时间", "新名称"), show="headings")
+            history_tree.heading("时间", text="时间")
+            history_tree.heading("新名称", text="新名称")
+            history_tree.pack(fill=tk.BOTH, expand=True)
+
+            for timestamp, new_name in self.rename_history[file_path]:
+                history_tree.insert("", "end", values=(timestamp, os.path.basename(new_name)))
+        else:
+            messagebox.showinfo("提示", "该文件没有重命名历史")
+
+    def toggle_dark_mode(self):
+        self.is_dark_mode = not self.is_dark_mode
+        if self.is_dark_mode:
+            self.style.theme_use('equilux')
+        else:
+            self.style.theme_use('clam')
+
+        self.update_colors()
+
+
+    def update_colors(self):
+        bg_color = '#2e2e2e' if self.is_dark_mode else '#f0f0f0'
+        fg_color = '#ffffff' if self.is_dark_mode else '#000000'
+
+        style = self.style
+        style.configure('TFrame', background=bg_color)
+        style.configure('TLabel', background=bg_color, foreground=fg_color)
+        style.configure('TButton', background=bg_color, foreground=fg_color)
+        style.configure('Treeview', background=bg_color, foreground=fg_color, fieldbackground=bg_color)
+        style.configure('Treeview.Heading', background=bg_color, foreground=fg_color)
+        style.configure('Custom.TCheckbutton', background=bg_color, foreground=fg_color)
+        style.map('Custom.TCheckbutton',
+                  background=[('active', '#3a3a3a' if self.is_dark_mode else '#e5e5e5')],
+                  foreground=[('disabled', '#6c6c6c' if self.is_dark_mode else '#a3a3a3')])
+
+        # 更新主窗口和所有子窗口的背景色
+        self.master.configure(background=bg_color)
+        for child in self.master.winfo_children():
+            try:
+                child.configure(background=bg_color)
+            except tk.TclError:
+                pass  # 忽略不支持背景色设置的小部件
+
+    async def process_directory_async(self, directory):
+        files = []
+        for root, dirs, filenames in os.walk(directory):
+            for filename in filenames:
+                files.append((root, filename))
+
+        loop = asyncio.get_event_loop()
+        results = await loop.run_in_executor(self.executor,
+                                             lambda: list(map(self.process_file, files)))
+        self.master.after(0, self.update_treeview, results)
+
+
+
+    def show_about(self):
+        about_text = "文件重命名工具\n版本 1.0\n\n作者：naomi032\n\n该工具用于批量重命名文件，支持多种重命名选项。"
+        messagebox.showinfo("关于", about_text)
 
     def open_help(self):
         help_url = "https://github.com/naomi032/JAV-code-Purifier"
@@ -561,6 +736,16 @@ class FileRenamerUI:
         except Exception as e:
             messagebox.showerror("错误", f"无法打开文件: {e}")
 
+    def on_closing(self):
+        self.is_shutting_down = True
+        try:
+            self.save_state()
+        except Exception as e:
+            logging.error(f"Error saving state: {e}")
+        finally:
+            self.executor.shutdown(wait=True)
+            self.master.quit()
+
     def load_state(self):
         state = load_state_from_file()
         self.replace_00_var.set(state.get('replace_00', 1))
@@ -586,17 +771,13 @@ class FileRenamerUI:
         }
         save_state_to_file(state)
 
-    def on_closing(self):
-        try:
-            self.save_state()
-        except Exception as e:
-            print(f"Error saving state: {e}")
-        finally:
-            self.master.destroy()
 
 if __name__ == "__main__":
-    os.chdir(os.path.dirname(os.path.abspath(__file__)))
-    root = tk.Tk()
-    app = FileRenamerUI(root)
-    root.protocol("WM_DELETE_WINDOW", app.on_closing)
-    root.mainloop()
+    try:
+        root = ThemedTk(theme="clam")
+        app = OptimizedFileRenamerUI(root)
+        root.protocol("WM_DELETE_WINDOW", app.on_closing)
+        root.mainloop()
+    except Exception as e:
+        logging.error(f"Unhandled exception: {e}")
+        messagebox.showerror("错误", f"程序遇到了一个未处理的错误：{e}")
