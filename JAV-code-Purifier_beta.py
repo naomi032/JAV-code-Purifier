@@ -9,11 +9,13 @@ from tkinter.ttk import Frame, Label, Button, Treeview, Checkbutton, Style
 import subprocess
 import shutil
 import winreg
+import logging
 
 # 常量定义
 CONFIG_FILE = 'config.ini'
 HISTORY_FILE = 'history.json'
 STATE_FILE = 'state.json'
+logging.basicConfig(filename='renamer.log', level=logging.DEBUG)
 
 def load_last_path():
     config = configparser.ConfigParser()
@@ -62,6 +64,7 @@ def save_state_to_file(state):
 
 class FileRenamerUI:
     def __init__(self, master):
+        self.file_paths = {}  # 用于存储文件路径，避免重复
         self.master = master
         self.master.title('文件重命名工具')
         self.master.geometry('800x600')
@@ -90,6 +93,7 @@ class FileRenamerUI:
         self.create_buttons_frame()
         self.create_statusbar()
         self.setup_shortcuts()
+        self.tree.bind("<Double-1>", self.on_treeview_double_click)
 
     def create_menu(self):
         menu = Menu(self.master, bg='#444444', fg='#ffffff')
@@ -124,10 +128,14 @@ class FileRenamerUI:
         self.folder_label.pack(side='left')
 
     def create_treeview(self):
-        columns = ('original', 'preview', 'result', 'ext', 'status')
+        columns = ('original', 'preview', 'result', 'ext', 'size', 'path', 'status')
         self.tree = Treeview(self.master, columns=columns, show='headings', selectmode='extended', style='Treeview')
         for col in columns:
             self.tree.heading(col, text=col)
+            if col == 'size':
+                self.tree.column(col, width=100)
+            elif col == 'path':
+                self.tree.column(col, width=200)
         self.tree.pack(fill=BOTH, expand=True, padx=10, pady=10)
 
         self.context_menu = Menu(self.tree, tearoff=0, bg='#444444', fg='#ffffff')
@@ -226,18 +234,11 @@ class FileRenamerUI:
         self.statusbar.config(text="正在预览文件...")
         self.master.update_idletasks()
 
-        files = os.listdir(self.selected_folder)
         for item in self.tree.get_children():
             self.tree.delete(item)
 
-        for filename in files:
-            name, ext = os.path.splitext(filename)
-            original_name = filename
-            new_name = self.process_filename(name)
-            preview_name = new_name + ext
-            final_name = preview_name
-
-            self.tree.insert("", "end", values=(original_name, preview_name, final_name, ext, '未修改'), tags=('checked',))
+        self.file_paths.clear()
+        self.process_directory(self.selected_folder)
 
         self.statusbar.config(text="预览完成")
 
@@ -286,6 +287,7 @@ class FileRenamerUI:
         messagebox.showinfo("完成", f"已删除 {deleted_count} 个非视频、非压缩包和非原盘文件")
         self.refresh_preview()
     def process_filename(self, name):
+        name = re.sub(r'[<>:"/\\|?*]', '', name)
         if self.remove_prefix_var.get():
             name = re.sub(r'hhd800\.com@|www\.98T\.la@', '', name)
 
@@ -310,6 +312,37 @@ class FileRenamerUI:
 
         return name
 
+    def process_directory(self, directory, parent=''):
+        for root, dirs, files in os.walk(directory):
+            relative_path = os.path.relpath(root, self.selected_folder)
+            for filename in files:
+                full_path = os.path.join(root, filename)
+                if full_path in self.file_paths:
+                    continue  # 跳过重复文件
+
+                name, ext = os.path.splitext(filename)
+                original_name = filename
+                new_name = self.process_filename(name)
+                preview_name = new_name + ext
+                final_name = preview_name
+
+                file_size = self.get_file_size(full_path)
+
+                self.tree.insert("", "end", values=(original_name, preview_name, final_name, ext, file_size, relative_path, '未修改'), tags=('checked',))
+                self.file_paths[full_path] = True
+
+    def get_file_size(self, file_path):
+        size = os.path.getsize(file_path)
+        if size < 1024:
+            return f"{size} B"
+        elif size < 1024 * 1024:
+            return f"{size/1024:.2f} KB"
+        elif size < 1024 * 1024 * 1024:
+            return f"{size/(1024*1024):.2f} MB"
+        else:
+            return f"{size/(1024*1024*1024):.2f} GB"
+
+
     def start_renaming(self):
         if not self.selected_folder:
             messagebox.showwarning("警告", "请先选择一个文件夹")
@@ -324,18 +357,29 @@ class FileRenamerUI:
 
         for item in self.tree.get_children():
             values = self.tree.item(item, 'values')
-            original_name, preview_name, final_name, ext, status = values
+            original_name, preview_name, final_name, ext, size, relative_path, status = values
 
             if status == '未修改':
+                original_path = os.path.join(self.selected_folder, relative_path, original_name)
+                new_path = os.path.join(self.selected_folder, relative_path, final_name)
+
+                if not os.path.exists(original_path):
+                    self.tree.set(item, 'status', f'错误: 文件不存在')
+                    continue
+
+                if not os.access(os.path.dirname(original_path), os.W_OK):
+                    self.tree.set(item, 'status', f'错误: 没有写入权限')
+                    continue
+
                 try:
-                    original_path = os.path.join(self.selected_folder, original_name)
-                    new_path = os.path.join(self.selected_folder, final_name)
                     os.rename(original_path, new_path)
                     self.tree.set(item, 'status', '已重命名')
-
-                    rename_history.append([original_name, final_name])
+                    rename_history.append([original_path, new_path])
+                    logging.info(f"Renamed: {original_path} to {new_path}")
                 except Exception as e:
-                    self.tree.set(item, 'status', f'错误: {e}')
+                    error_msg = f'错误: {str(e)}'
+                    self.tree.set(item, 'status', error_msg)
+                    logging.error(f"Error renaming {original_path}: {str(e)}")
 
         if rename_history:
             history.extend(rename_history)
@@ -441,7 +485,21 @@ class FileRenamerUI:
     def on_treeview_double_click(self, event):
         item = self.tree.identify_row(event.y)
         if item:
-            self.rename_selected_file()
+            values = self.tree.item(item, 'values')
+            original_name, _, _, _, _, relative_path, _ = values
+            file_path = os.path.join(self.selected_folder, relative_path, original_name)
+            if os.path.exists(file_path):
+                self.open_file(file_path)
+
+    def open_file(self, file_path):
+        try:
+            os.startfile(file_path)
+        except AttributeError:
+            # 对于非Windows系统
+            opener = "open" if sys.platform == "darwin" else "xdg-open"
+            subprocess.call([opener, file_path])
+        except Exception as e:
+            messagebox.showerror("错误", f"无法打开文件: {e}")
 
     def load_state(self):
         state = load_state_from_file()
@@ -477,6 +535,7 @@ class FileRenamerUI:
             self.master.destroy()
 
 if __name__ == "__main__":
+    os.chdir(os.path.dirname(os.path.abspath(__file__)))
     root = tk.Tk()
     app = FileRenamerUI(root)
     root.protocol("WM_DELETE_WINDOW", app.on_closing)
