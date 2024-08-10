@@ -4,12 +4,13 @@ import json
 import configparser
 import webbrowser
 import tkinter as tk
-from tkinter import filedialog, messagebox, Label, Menu, Toplevel, IntVar, BOTH, X
+from tkinter import filedialog, messagebox, Label, Menu, Toplevel, IntVar, BOTH, X, RIGHT, Y
 from tkinter.ttk import Frame, Label, Button, Treeview, Checkbutton, Style
 import subprocess
 import shutil
 import winreg
 import logging
+from PIL import Image, ImageTk
 
 # 常量定义
 CONFIG_FILE = 'config.ini'
@@ -64,10 +65,10 @@ def save_state_to_file(state):
 
 class FileRenamerUI:
     def __init__(self, master):
-        self.file_paths = {}  # 用于存储文件路径，避免重复
+        self.file_paths = {}
         self.master = master
         self.master.title('文件重命名工具')
-        self.master.geometry('800x600')
+        self.master.geometry('1200x700')
 
         self.style = Style()
         self.style.theme_use('default')
@@ -84,16 +85,32 @@ class FileRenamerUI:
         self.style.configure('TButton', background='#444444', foreground='#ffffff')
         self.style.configure('Treeview', background='#2e2e2e', foreground='#ffffff', fieldbackground='#2e2e2e')
         self.style.configure('Treeview.Heading', background='#444444', foreground='#ffffff')
+        self.style.configure('TButton', padding=(10, 5), relief="flat", background='#0067C0', foreground='white')
+        self.style.map('TButton', background=[('active', '#0078D4')])
 
     def setup_ui(self):
         self.create_menu()
-        self.create_folder_frame()
-        self.create_treeview()
-        self.create_options_frame()
-        self.create_buttons_frame()
+
+        # 创建主框架
+        main_frame = Frame(self.master)
+        main_frame.pack(fill=BOTH, expand=True)
+
+        # 左侧框架
+        left_frame = Frame(main_frame)
+        left_frame.pack(side='left', fill=BOTH, expand=True)
+
+        self.create_folder_frame(left_frame)
+        self.create_treeview(left_frame)
+        self.create_options_frame(left_frame)
+        self.create_buttons_frame(left_frame)
+
+        # 右侧预览框架
+        right_frame = Frame(main_frame, width=300)
+        right_frame.pack(side='right', fill=Y)
+        self.create_preview_frame(right_frame)
+
         self.create_statusbar()
         self.setup_shortcuts()
-        self.tree.bind("<Double-1>", self.on_treeview_double_click)
 
     def create_menu(self):
         menu = Menu(self.master, bg='#444444', fg='#ffffff')
@@ -121,31 +138,42 @@ class FileRenamerUI:
         menu.add_cascade(label='帮助', menu=help_menu)
         help_menu.add_command(label='帮助', command=self.open_help)
 
-    def create_folder_frame(self):
-        self.folder_frame = Frame(self.master)
+    def create_preview_frame(self, parent):
+        preview_frame = Frame(parent)
+        preview_frame.pack(fill=BOTH, expand=True)
+
+        preview_label = Label(preview_frame, text="预览图片", style='TLabel')
+        preview_label.pack(pady=10)
+
+        self.preview_image = Label(preview_frame)
+        self.preview_image.pack(fill=BOTH, expand=True, padx=10, pady=10)
+
+
+    def create_folder_frame(self, parent):
+        self.folder_frame = Frame(parent)
         self.folder_frame.pack(fill=X, padx=10, pady=10)
         self.folder_label = Label(self.folder_frame, text='未选择文件夹', style='TLabel')
         self.folder_label.pack(side='left')
 
-    def create_treeview(self):
-        columns = ('original', 'preview', 'result', 'ext', 'size', 'path', 'status')
-        self.tree = Treeview(self.master, columns=columns, show='headings', selectmode='extended', style='Treeview')
+
+    def create_treeview(self, parent):
+        columns = ('原始文件名', '预览名称', '最终名称', '扩展名', '大小', '路径', '状态')
+        self.tree = Treeview(parent, columns=columns, show='headings', selectmode='extended', style='Treeview')
         for col in columns:
             self.tree.heading(col, text=col)
-            if col == 'size':
+            if col == '大小':
                 self.tree.column(col, width=100)
-            elif col == 'path':
+            elif col == '路径':
                 self.tree.column(col, width=200)
         self.tree.pack(fill=BOTH, expand=True, padx=10, pady=10)
 
-        self.context_menu = Menu(self.tree, tearoff=0, bg='#444444', fg='#ffffff')
-        self.context_menu.add_command(label="重命名", command=self.rename_selected_file)
-        self.context_menu.add_command(label="删除", command=self.delete_selected_file)
+        self.tree.bind("<<TreeviewSelect>>", self.on_treeview_select)
         self.tree.bind("<Button-3>", self.on_treeview_right_click)
         self.tree.bind("<Double-1>", self.on_treeview_double_click)
 
-    def create_options_frame(self):
-        self.options_frame = Frame(self.master)
+
+    def create_options_frame(self, parent):
+        self.options_frame = Frame(parent)
         self.options_frame.pack(fill=X, padx=10, pady=10)
 
         self.replace_00_var = IntVar(value=1)
@@ -160,20 +188,22 @@ class FileRenamerUI:
         Checkbutton(self.options_frame, text="保留横杠后的三位数字", variable=self.retain_digits_var).pack(side='left', padx=5)
         Checkbutton(self.options_frame, text="保留 xxx-yyy 格式", variable=self.retain_format_var).pack(side='left', padx=5)
 
-    def create_buttons_frame(self):
-        self.buttons_frame = Frame(self.master)
+    def create_buttons_frame(self, parent):
+        self.buttons_frame = Frame(parent)
         self.buttons_frame.pack(fill=X, padx=10, pady=10)
-        self.start_button = Button(self.buttons_frame, text='开始重命名', command=self.start_renaming)
+        self.start_button = Button(self.buttons_frame, text='开始重命名', command=self.start_renaming, style='TButton')
         self.start_button.pack(side='left', padx=5)
         self.start_button.config(state="disabled")
-        Button(self.buttons_frame, text='取消', command=self.cancel_renaming).pack(side='left', padx=5)
-        Button(self.buttons_frame, text='刷新预览', command=self.refresh_preview).pack(side='left', padx=5)
-        Button(self.buttons_frame, text='解压文件', command=self.extract_archives).pack(side='left', padx=5)
-        Button(self.buttons_frame, text='删除小视频', command=self.delete_small_videos).pack(side='left', padx=5)
-        Button(self.buttons_frame, text='删除非视频文件', command=self.delete_non_video_files).pack(side='left', padx=5)
+        Button(self.buttons_frame, text='取消', command=self.cancel_renaming, style='TButton').pack(side='left', padx=5)
+        Button(self.buttons_frame, text='刷新预览', command=self.refresh_preview, style='TButton').pack(side='left', padx=5)
+        Button(self.buttons_frame, text='解压文件', command=self.extract_archives, style='TButton').pack(side='left', padx=5)
+        Button(self.buttons_frame, text='删除小视频', command=self.delete_small_videos, style='TButton').pack(side='left', padx=5)
+        Button(self.buttons_frame, text='删除非视频文件', command=self.delete_non_video_files, style='TButton').pack(side='left', padx=5)
+
     def create_statusbar(self):
         self.statusbar = tk.Label(self.master, text="就绪", bd=1, relief=tk.SUNKEN, anchor=tk.W, bg='#2e2e2e', fg='#ffffff')
         self.statusbar.pack(side=tk.BOTTOM, fill=tk.X)
+
 
     def get_default_app(self, file_extension):
         try:
@@ -427,12 +457,18 @@ class FileRenamerUI:
         if messagebox.askyesno("确认删除", "您确定要删除这些文件吗？"):
             for item in selected_items:
                 values = self.tree.item(item, 'values')
-                original_name, preview_name, final_name, ext, status = values
+                original_name, _, _, _, _, relative_path, _ = values  # 匹配新的列结构
                 try:
-                    os.remove(os.path.join(self.selected_folder, original_name))
-                    self.tree.delete(item)
+                    file_path = os.path.join(self.selected_folder, relative_path, original_name)
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                        self.tree.delete(item)
+                    else:
+                        self.tree.set(item, 'status', '错误: 文件不存在')
                 except Exception as e:
                     self.tree.set(item, 'status', f'错误: {e}')
+
+            self.refresh_preview()
 
     def undo_rename(self):
         history = load_history()
@@ -490,6 +526,30 @@ class FileRenamerUI:
             file_path = os.path.join(self.selected_folder, relative_path, original_name)
             if os.path.exists(file_path):
                 self.open_file(file_path)
+
+    def on_treeview_select(self, event):
+        selected_items = self.tree.selection()
+        if selected_items:
+            item = selected_items[0]
+            values = self.tree.item(item, 'values')
+            original_name, _, _, _, _, relative_path, _ = values
+            file_path = os.path.join(self.selected_folder, relative_path, original_name)
+            self.update_preview(file_path)
+
+    def update_preview(self, file_path):
+        if os.path.exists(file_path):
+            try:
+                image = Image.open(file_path)
+                image.thumbnail((280, 280))  # Resize image to fit preview area
+                photo = ImageTk.PhotoImage(image)
+                self.preview_image.config(image=photo)
+                self.preview_image.image = photo
+            except:
+                self.preview_image.config(image='')
+                self.preview_image.config(text="无法预览此文件")
+        else:
+            self.preview_image.config(image='')
+            self.preview_image.config(text="文件不存在")
 
     def open_file(self, file_path):
         try:
