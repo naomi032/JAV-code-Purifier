@@ -1150,7 +1150,20 @@ class OptimizedFileRenamerUI:
     def process_filename(self, name, ask_for_confirmation=True):
         base_name, ext = os.path.splitext(name)
 
-        cd_match = re.search(r'cd(\d+)$', base_name)
+        # 处理包含 'part' 的文件名
+        part_match = re.search(r'(part\d+)', base_name, re.IGNORECASE)
+        part_suffix = ''
+        if part_match:
+            part_suffix = part_match.group(1)
+            base_name = base_name[:part_match.start()].strip()
+
+        # 新增：处理类似 sivr00247 的格式
+        product_code_match = re.search(r'([a-zA-Z]+)(\d{5,})', base_name, re.IGNORECASE)
+        if product_code_match:
+            letters, numbers = product_code_match.groups()
+            base_name = f"{letters.lower()}-{int(numbers)}"  # 移除前导零
+
+        cd_match = re.search(r'cd(\d+)$', base_name, re.IGNORECASE)
         if cd_match and ask_for_confirmation:
             if not self.confirm_cd_rename(name):
                 return name, False
@@ -1158,21 +1171,14 @@ class OptimizedFileRenamerUI:
         cd_number = self._extract_cd_number(base_name)
         base_name = re.sub(r'_\d{3}_\d{3}$', '', base_name)
 
-        new_name = base_name + ext if ext else base_name
-        if new_name != name:
-            return new_name, True  # 返回新名称和一个标志，表示名称已更改
-        return new_name, False
-
+        # 应用其他重命名规则
         base_name = re.sub(r'[<>:"/\\|?*]', '', base_name)
         if self.remove_prefix_var.get():
             base_name = re.sub(r'hhd800\.com@|www\.98T\.la@', '', base_name)
-
         if self.replace_00_var.get():
             base_name = re.sub(r'([a-zA-Z]+)00(\d+)', r'\1-\2', base_name)
-
         if self.remove_hhb_var.get():
             base_name = re.sub(r'hhb.*', '', base_name)
-
         if self.retain_digits_var.get() and '-' in base_name:
             parts = base_name.split('-')
             if len(parts) > 1:
@@ -1180,19 +1186,24 @@ class OptimizedFileRenamerUI:
                 if digits:
                     parts[1] = digits[0][:3]
                 base_name = '-'.join(parts)
-
         if self.retain_format_var.get():
-            match = re.search(r'[A-Za-z]{2,6}-\d{3}', base_name)
+            match = re.search(r'[A-Za-z]{2,6}-?\d{3,4}', base_name)
             if match:
                 base_name = match.group()
 
         base_name = self._apply_custom_rules(base_name)
-        base_name = self._extract_product_code(base_name)
+
+        # 重新添加 part 后缀（如果存在）
+        if part_suffix:
+            base_name += f".{part_suffix}"
 
         if cd_number:
             base_name += f"cd{int(cd_number)}"
 
-        new_name = base_name + ext if ext else base_name
+        # 移除文件名中的额外信息（如 _8K）
+        base_name = re.sub(r'_\d+K$', '', base_name)
+
+        new_name = base_name + ext
         return new_name, new_name != name
 
 
@@ -1228,14 +1239,13 @@ class OptimizedFileRenamerUI:
 
             for filename in files:
                 full_path = os.path.join(root, filename)
-                name, ext = os.path.splitext(filename)
-                new_name, changed = self.process_filename(name)
-                preview_name = new_name + ext
-                final_name = preview_name
-                file_size = self.get_file_size(full_path)
+                new_name, changed = self.process_filename(filename)
                 tag = 'changed' if changed else ''
+                file_size = self.get_file_size(full_path)
                 cdx_info = 'CDX' if self.is_cdx_file(filename) else ''
-                yield (filename, preview_name, final_name, ext, file_size, relative_path, '未修改', tag, cdx_info)
+                yield (
+                filename, new_name, new_name, os.path.splitext(filename)[1], file_size, relative_path, '未修改', tag,
+                cdx_info)
 
     def is_cdx_file(self, filename):
         return bool(re.search(r'cd\d+', filename, re.IGNORECASE))
@@ -1332,9 +1342,13 @@ class OptimizedFileRenamerUI:
         cdx_files = []
         for item in items_to_rename:
             values = self.tree.item(item, 'values')
-            original_name, _, final_name, item_type, _, _, _ = values
+            if len(values) < 7:
+                messagebox.showerror("错误", f"意外的数据结构: {values}")
+                continue
+
+            original_name, _, final_name, item_type, *_ = values
             if (mode == "files" and item_type != '<DIR>') or (mode == "folders" and item_type == '<DIR>'):
-                if re.search(r'cd\d+', original_name, re.IGNORECASE):
+                if self.is_cdx_file(original_name):
                     cdx_files.append((item, original_name, final_name))
 
         # 如果有 CDX 文件，先确认
@@ -1362,7 +1376,12 @@ class OptimizedFileRenamerUI:
 
         for i, item in enumerate(items_to_rename):
             values = self.tree.item(item, 'values')
-            original_name, _, final_name, item_type, _, relative_path, _ = values
+            if len(values) < 7:
+                messagebox.showerror("错误", f"意外的数据结构: {values}")
+                error_count += 1
+                continue
+
+            original_name, _, final_name, item_type, _, relative_path, *_ = values
             try:
                 original_path = os.path.join(self.selected_folder, relative_path, original_name)
                 new_path = os.path.join(self.selected_folder, relative_path, final_name)
