@@ -768,38 +768,36 @@ class OptimizedFileRenamerUI:
             cb.pack(anchor=tk.W, padx=5, pady=2)
 
     def refresh_treeview(self):
+        if self.tree is None or not self.all_items:
+            return  # 如果 tree 还没有被创建或 all_items 为空，直接返回
+
         mode = self.rename_mode.get()
-        visible_items = []
-        hidden_items = []
+        visible_count = 0
+
+        # 创建一个集合来存储应该显示的项目的值
+        items_to_show = set()
 
         for item in self.all_items:
-            try:
-                values = self.tree.item(item, 'values')
-                item_type = values[3]  # 假设类型信息在第4列
-                if (mode == "files" and item_type != '<DIR>') or (mode == "folders" and item_type == '<DIR>'):
-                    visible_items.append(item)
-                else:
-                    hidden_items.append(item)
-            except tk.TclError:
-                logging.warning(f"Item {item} not found in tree")
+            item_type = item[3]  # 假设类型信息在第4列
+            if (mode == "files" and item_type != '<DIR>') or (mode == "folders" and item_type == '<DIR>'):
+                items_to_show.add(item)
+                visible_count += 1
 
-        # 隐藏不需要显示的项目
-        for item in hidden_items:
-            try:
-                self.tree.detach(item)
-            except tk.TclError:
-                logging.warning(f"Cannot detach item {item}")
+        # 获取当前 treeview 中的所有项目
+        current_items = self.tree.get_children()
 
-        # 显示需要显示的项目
-        for item in visible_items:
-            try:
-                if self.tree.parent(item) == '':  # 如果项目当前没有父项
-                    self.tree.reattach(item, '', 'end')  # 重新附加到根节点
-            except tk.TclError:
-                logging.warning(f"Cannot reattach item {item}")
+        # 移除不应该显示的项目
+        for item_id in current_items:
+            values = self.tree.item(item_id, 'values')
+            if values not in items_to_show:
+                self.tree.delete(item_id)
+
+        # 添加新的项目
+        for values in items_to_show:
+            if not any(self.tree.item(child, 'values') == values for child in self.tree.get_children()):
+                self.tree.insert('', 'end', values=values)
 
         # 更新状态栏
-        visible_count = len(visible_items)
         self.statusbar.config(text=f"显示 {visible_count} 个{'文件' if mode == 'files' else '文件夹'}")
 
     def on_rename_mode_change(self, *args):
@@ -866,8 +864,9 @@ class OptimizedFileRenamerUI:
         for _ in range(batch_size):
             try:
                 item = next(self.file_generator)
-                self.tree.insert("", "end", values=item)
                 self.all_items.append(item)
+                if len(self.tree.get_children()) < 1000:  # 限制初始显示的项目数量
+                    self.tree.insert("", "end", values=item)
             except StopIteration:
                 self.statusbar.config(text="预览完成")
                 self.refresh_treeview()
@@ -1082,10 +1081,10 @@ class OptimizedFileRenamerUI:
         for root, dirs, files in os.walk(directory):
             relative_path = os.path.relpath(root, self.selected_folder)
 
-            folder_name = os.path.basename(root)
-            new_folder_name = self.process_filename(folder_name)
-            if folder_name != new_folder_name or relative_path == '.':
-                yield (folder_name, new_folder_name, new_folder_name, '<DIR>', '', relative_path, '未修改')
+            for dir_name in dirs:
+                full_path = os.path.join(root, dir_name)
+                new_dir_name = self.process_filename(dir_name)
+                yield (dir_name, new_dir_name, new_dir_name, '<DIR>', '', relative_path, '未修改')
 
             for filename in files:
                 full_path = os.path.join(root, filename)
