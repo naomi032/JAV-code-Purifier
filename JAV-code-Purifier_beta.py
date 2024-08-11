@@ -37,6 +37,7 @@ STATE_FILE = 'state.json'
 CUSTOM_RULES_FILE = 'custom_rules.json'
 logging.basicConfig(filename='renamer.log', level=logging.DEBUG)
 warnings.filterwarnings("ignore", category=UserWarning)
+sys.setrecursionlimit(5000)  # 增加递归限制，默认是100
 
 def create_icon(png_path, icon_sizes=[(16, 16), (32, 32), (48, 48), (64, 64)]):
     with Image.open(png_path) as img:
@@ -117,32 +118,15 @@ class OptimizedFileRenamerUI:
     def __init__(self, master):
         self.master = master
         self.master.title('JAV-code-Purifier')
-        self.master.geometry('1300x1000')  # 增加宽度和高度
+        self.master.geometry('1300x1000')
+        self.master.configure(bg='#1e1e1e')  # 设置初始背景色
+        self.style = ttk.Style(self.master)
+        self.style.theme_use('clam')
         self.create_menu()
-        self.create_context_menu()
         self.rename_mode = tk.StringVar(value="files")
         self.rename_mode.trace('w', self.on_rename_mode_change)
         self.all_items = []
-        self.themes = {
-            'light': {
-                'bg': '#f0f0f0',
-                'fg': '#000000',
-                'active_bg': '#e5e5e5',
-                'disabled_fg': '#a3a3a3'
-            },
-            'dark': {
-                'bg': '#2e2e2e',
-                'fg': '#ffffff',
-                'active_bg': '#3a3a3a',
-                'disabled_fg': '#6c6c6c'
-            },
-            'eye_friendly': {
-                'bg': '#e0e5c1',
-                'fg': '#2c3e50',
-                'active_bg': '#d1d6b2',
-                'disabled_fg': '#7f8c8d'
-            }
-        }
+
         self.current_theme = 'light'
         self.executor = ThreadPoolExecutor(max_workers=5)
         self.loop = asyncio.new_event_loop()
@@ -161,10 +145,12 @@ class OptimizedFileRenamerUI:
         self.is_dark_mode = False
         self.rename_history = {}
         self.file_types_to_delete = {}
-        self.custom_rules = load_custom_rules()
+
 
         self.context_menu = None  # Initialize context_menu as None
         self.create_context_menu()  # Create the context menu
+        if not self.context_menu:
+            print("Context menu failed to initialize")  # 用于调试
         self.replace_00_var = tk.BooleanVar(value=True)
         self.remove_prefix_var = tk.BooleanVar(value=True)
         self.remove_hhb_var = tk.BooleanVar(value=True)
@@ -172,13 +158,13 @@ class OptimizedFileRenamerUI:
         self.retain_format_var = tk.BooleanVar(value=True)
         self.custom_prefix = tk.StringVar()
         self.custom_suffix = tk.StringVar()
+        self.custom_rules = load_custom_rules()
 
         self.preview_canvas = None
         self.preview_label = None
 
-
-
         self.setup_ui()
+        self.apply_dark_theme()  # 在设置 UI 后应用暗黑主题
         self.load_state()
         self.style.configure("Custom.TCheckbutton", background="#f0f0f0", foreground="#000000")
         self.style.map("Custom.TCheckbutton",
@@ -189,10 +175,8 @@ class OptimizedFileRenamerUI:
         self.master.bind("<Configure>", self.on_window_configure)
 
     def on_window_configure(self, event):
-        # 如果是窗口大小改变事件
         if event.widget == self.master:
             current_time = time.time()
-            # 如果距离上次resize过去了至少500ms，才更新UI
             if current_time - self.last_resize_time > 0.5:
                 self.last_resize_time = current_time
                 self.master.after(100, self.update_layout)
@@ -202,12 +186,136 @@ class OptimizedFileRenamerUI:
         # 这里可以添加任何需要在窗口大小变化时更新的布局代码
         pass
 
-    def toggle_theme(self):
-        themes = list(self.themes.keys())
-        current_index = themes.index(self.current_theme)
-        next_index = (current_index + 1) % len(themes)
-        self.current_theme = themes[next_index]
-        self.apply_theme()
+    def apply_dark_theme(self):
+        dark_theme = {
+            'bg': '#1e1e1e',  # 深灰色背景
+            'fg': '#e0e0e0',  # 浅灰色文字
+            'button_bg': '#3a3a3a',  # 按钮背景色
+            'button_fg': '#ffffff',  # 按钮文字颜色
+            'active_bg': '#4a4a4a',  # 稍亮的灰色用于激活状态
+            'disabled_fg': '#6c6c6c',  # 中灰色用于禁用状态
+            'changed_fg': '#ffd700',  # 金黄色用于更改的项目
+            'accent': '#4a90e2',  # 蓝色作为强调色
+            'error': '#e74c3c',  # 红色用于错误
+            'success': '#2ecc71',  # 绿色用于成功
+            'border': '#404040',  # 银色边框（更暗一些）
+            'menu_bg': '#2d2d2d',  # 菜单栏背景色
+        }
+
+        # 更新 ttk 样式
+        self.style.configure('TFrame', background=dark_theme['bg'], bordercolor=dark_theme['border'])
+        self.style.configure('TLabel', background=dark_theme['bg'], foreground=dark_theme['fg'])
+        self.style.configure('TButton', background=dark_theme['button_bg'], foreground=dark_theme['button_fg'])
+        self.style.configure('Treeview', background=dark_theme['bg'], foreground=dark_theme['fg'],
+                             fieldbackground=dark_theme['bg'], bordercolor=dark_theme['border'])
+        self.style.configure('Treeview.Heading', background=dark_theme['active_bg'], foreground=dark_theme['fg'])
+        self.style.configure('Custom.TCheckbutton', background=dark_theme['bg'], foreground=dark_theme['fg'])
+        self.style.configure('TProgressbar', background=dark_theme['accent'])
+        self.style.configure('TEntry', fieldbackground=dark_theme['bg'], foreground=dark_theme['fg'],
+                             bordercolor=dark_theme['border'])
+        self.style.configure('TCombobox', fieldbackground=dark_theme['bg'], foreground=dark_theme['fg'],
+                             selectbackground=dark_theme['active_bg'])
+
+        # 更新映射
+        self.style.map('TButton',
+                       background=[('active', dark_theme['active_bg'])],
+                       foreground=[('active', dark_theme['fg'])])
+        self.style.map('Custom.TCheckbutton',
+                       background=[('active', dark_theme['active_bg'])],
+                       foreground=[('disabled', dark_theme['disabled_fg'])])
+        self.style.map('Treeview',
+                       background=[('selected', dark_theme['accent'])],
+                       foreground=[('selected', dark_theme['fg'])])
+
+        # 更新非 ttk 小部件
+        self.master.configure(bg=dark_theme['bg'])
+        if hasattr(self, 'preview_canvas'):
+            self.preview_canvas.configure(bg=dark_theme['bg'])
+
+        # 更新所有小部件的颜色
+        self.update_all_widgets(self.master, dark_theme)
+
+        # 设置 Treeview 的标签颜色
+        self.tree.tag_configure("changed", foreground=dark_theme['changed_fg'])
+        self.tree.tag_configure("error", foreground=dark_theme['error'])
+        self.tree.tag_configure("success", foreground=dark_theme['success'])
+
+        # 更新菜单颜色
+        self.update_menu_colors(dark_theme)
+
+        # 设置窗口背景色
+        self.master.configure(bg=dark_theme['bg'])
+
+    def update_all_widgets(self, parent, theme):
+        widgets_to_update = [parent]
+        while widgets_to_update:
+            widget = widgets_to_update.pop(0)
+            try:
+                if isinstance(widget, (tk.Frame, tk.LabelFrame)):
+                    widget.configure(bg=theme['bg'], highlightbackground=theme['border'],
+                                     highlightcolor=theme['border'])
+                elif isinstance(widget, (tk.Label, tk.Button, tk.Entry, tk.Text, tk.Listbox, tk.Canvas)):
+                    widget.configure(bg=theme['bg'], fg=theme['fg'])
+                    if isinstance(widget, (tk.Entry, tk.Text)):
+                        widget.configure(insertbackground=theme['fg'])  # 设置光标颜色
+                elif isinstance(widget, ttk.Widget):
+                    widget_name = widget.winfo_class()
+                    self.style.configure(f'{widget_name}', background=theme['bg'], foreground=theme['fg'])
+            except tk.TclError:
+                pass
+
+            widgets_to_update.extend(widget.winfo_children())
+
+    def update_other_widgets(self):
+        # 更新状态栏
+        self.statusbar.configure(background=self.style.lookup('TFrame', 'background'),
+                                 foreground=self.style.lookup('TLabel', 'foreground'))
+
+        # 更新自定义规则框架
+        for widget in self.custom_rule_frame.winfo_children():
+            if isinstance(widget, ttk.Entry):
+                widget.configure(style='TEntry')
+            elif isinstance(widget, tk.Listbox):
+                widget.configure(background=self.style.lookup('TFrame', 'background'),
+                                 foreground=self.style.lookup('TLabel', 'foreground'),
+                                 selectbackground=self.style.lookup('Treeview', 'selectbackground'),
+                                 selectforeground=self.style.lookup('Treeview', 'selectforeground'))
+
+        # 更新预览框架
+        self.preview_canvas.configure(background=self.style.lookup('TFrame', 'background'))
+        self.preview_label.configure(style='TLabel')
+        # 在 apply_dark_theme 方法的末尾调用此函数
+        self.update_other_widgets()
+
+    def update_menu_colors(self, theme):
+        def recursive_color_set(menu):
+            menu.config(bg=theme['menu_bg'], fg=theme['fg'], activebackground=theme['active_bg'],
+                        activeforeground=theme['fg'])
+            for item in menu.winfo_children():
+                if isinstance(item, tk.Menu):
+                    recursive_color_set(item)
+
+        main_menu = self.master.nametowidget(self.master.cget("menu"))
+        recursive_color_set(main_menu)
+
+    def update_widget_colors(self, widget, theme):
+        try:
+            if isinstance(widget, (ttk.Button, ttk.Checkbutton, ttk.Radiobutton)):
+                pass  # 这些 ttk 小部件的颜色由 style 控制
+            elif isinstance(widget, ttk.Entry):
+                widget.configure(style='TEntry')
+            elif isinstance(widget, tk.Text):
+                widget.config(bg=theme['bg'], fg=theme['fg'], insertbackground=theme['fg'])
+            elif isinstance(widget, tk.Listbox):
+                widget.config(bg=theme['bg'], fg=theme['fg'], selectbackground=theme['accent'],
+                              selectforeground=theme['fg'])
+            else:
+                widget.config(bg=theme['bg'], fg=theme['fg'])
+        except tk.TclError:
+            pass  # 忽略不支持颜色设置的小部件
+
+        for child in widget.winfo_children():
+            self.update_widget_colors(child, theme)
 
     def apply_theme(self):
         if not hasattr(self, 'last_theme') or self.last_theme != self.current_theme:
@@ -264,8 +372,8 @@ class OptimizedFileRenamerUI:
         bottom_frame = ttk.Frame(left_frame)
         bottom_frame.pack(fill=tk.BOTH, expand=True)
 
-        self.create_custom_rule_frame(bottom_frame)
-        self.create_preview_frame(bottom_frame)  # 确保这个方法被调用
+        self.create_custom_rule_frame(bottom_frame)  # 确保这行存在
+        self.create_preview_frame(bottom_frame)
 
         self.create_buttons_frame(left_frame)
         self.create_statusbar()
@@ -277,10 +385,14 @@ class OptimizedFileRenamerUI:
             return
 
         item = selected_items[0]
+
         values = self.tree.item(item, 'values')
-        if len(values) != 7:
+        if len(values) < 8:
             messagebox.showerror("错误", f"意外的数据结构: {values}")
             return
+
+        original_name, preview_name, final_name, item_type, size, relative_path, status, tag = values[:8]
+        cdx_info = values[8] if len(values) > 8 else ''
 
         if name_type == 'original':
             name = values[0]  # 原始名称
@@ -377,7 +489,11 @@ class OptimizedFileRenamerUI:
 
         item = selected_items[0]
         values = self.tree.item(item, 'values')
-        original_name, _, _, _, _, relative_path, _ = values
+        if len(values) < 6:
+            messagebox.showerror("错误", f"意外的数据结构: {values}")
+            return
+
+        original_name, *_, relative_path = values[:6]
         file_path = os.path.join(self.selected_folder, relative_path, original_name)
         self.open_file(file_path)
 
@@ -389,7 +505,11 @@ class OptimizedFileRenamerUI:
 
         item = selected_items[0]
         values = self.tree.item(item, 'values')
-        original_name, _, _, _, _, relative_path, _ = values
+        if len(values) < 7:
+            messagebox.showerror("错误", f"意外的数据结构: {values}")
+            return
+
+        original_name, _, _, _, _, relative_path = values[:6]
         file_path = os.path.join(self.selected_folder, relative_path, original_name)
         folder_path = os.path.dirname(file_path)
 
@@ -408,38 +528,40 @@ class OptimizedFileRenamerUI:
             self.master.after(0, lambda: messagebox.showerror("错误", f"无法打开文件位置: {e}"))
 
     def create_custom_rule_frame(self, parent):
-        custom_rule_frame = ttk.LabelFrame(parent, text="自定义规则")
-        custom_rule_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=10)
+        self.custom_rule_frame = ttk.LabelFrame(parent, text="自定义规则")
+        self.custom_rule_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=10)
 
         # 现有的替换规则部分
-        ttk.Label(custom_rule_frame, text="要替换的内容:").grid(row=0, column=0, padx=5, pady=5)
-        self.old_content_entry = ttk.Entry(custom_rule_frame)
+        ttk.Label(self.custom_rule_frame, text="要替换的内容:").grid(row=0, column=0, padx=5, pady=5)
+        self.old_content_entry = ttk.Entry(self.custom_rule_frame)
         self.old_content_entry.grid(row=0, column=1, padx=5, pady=5)
 
-        ttk.Label(custom_rule_frame, text="新内容:").grid(row=1, column=0, padx=5, pady=5)
-        self.new_content_entry = ttk.Entry(custom_rule_frame)
+        ttk.Label(self.custom_rule_frame, text="新内容:").grid(row=1, column=0, padx=5, pady=5)
+        self.new_content_entry = ttk.Entry(self.custom_rule_frame)
         self.new_content_entry.grid(row=1, column=1, padx=5, pady=5)
 
-        ttk.Button(custom_rule_frame, text="创建替换规则", command=self.create_custom_rule).grid(row=2, column=0,
-                                                                                                 columnspan=2, pady=5)
+        ttk.Button(self.custom_rule_frame, text="创建替换规则", command=self.create_custom_rule).grid(row=2, column=0,
+                                                                                                      columnspan=2,
+                                                                                                      pady=5)
 
         # 新增前缀和后缀部分
-        ttk.Label(custom_rule_frame, text="自定义前缀:").grid(row=3, column=0, padx=5, pady=5)
-        self.prefix_entry = ttk.Entry(custom_rule_frame, textvariable=self.custom_prefix)
+        ttk.Label(self.custom_rule_frame, text="自定义前缀:").grid(row=3, column=0, padx=5, pady=5)
+        self.prefix_entry = ttk.Entry(self.custom_rule_frame, textvariable=self.custom_prefix)
         self.prefix_entry.grid(row=3, column=1, padx=5, pady=5)
 
-        ttk.Label(custom_rule_frame, text="自定义后缀:").grid(row=4, column=0, padx=5, pady=5)
-        self.suffix_entry = ttk.Entry(custom_rule_frame, textvariable=self.custom_suffix)
+        ttk.Label(self.custom_rule_frame, text="自定义后缀:").grid(row=4, column=0, padx=5, pady=5)
+        self.suffix_entry = ttk.Entry(self.custom_rule_frame, textvariable=self.custom_suffix)
         self.suffix_entry.grid(row=4, column=1, padx=5, pady=5)
 
-        ttk.Button(custom_rule_frame, text="应用前缀/后缀", command=self.apply_prefix_suffix).grid(row=5, column=0,
-                                                                                                   columnspan=2, pady=5)
+        ttk.Button(self.custom_rule_frame, text="应用前缀/后缀", command=self.apply_prefix_suffix).grid(row=5, column=0,
+                                                                                                        columnspan=2,
+                                                                                                        pady=5)
 
-        self.rules_listbox = tk.Listbox(custom_rule_frame, width=50, height=5)
+        self.rules_listbox = tk.Listbox(self.custom_rule_frame, width=50, height=5)
         self.rules_listbox.grid(row=6, column=0, columnspan=2, padx=5, pady=5)
 
-        ttk.Button(custom_rule_frame, text="删除规则", command=self.delete_custom_rule).grid(row=7, column=0,
-                                                                                             columnspan=2, pady=5)
+        ttk.Button(self.custom_rule_frame, text="删除规则", command=self.delete_custom_rule).grid(row=7, column=0,
+                                                                                                  columnspan=2, pady=5)
 
         self.update_rules_listbox()
 
@@ -508,9 +630,6 @@ class OptimizedFileRenamerUI:
                        foreground=[('disabled', '#a3a3a3')])
 
     def create_context_menu(self):
-        if hasattr(self, 'context_menu'):
-            return  # 如果上下文菜单已经创建，直接返回
-
         self.context_menu = tk.Menu(self.master, tearoff=0)
         self.context_menu.add_command(label="重命名", command=self.rename_selected_file)
         self.context_menu.add_command(label="手动修改名称", command=self.manual_rename)
@@ -532,11 +651,12 @@ class OptimizedFileRenamerUI:
 
         item = selected_items[0]
         values = self.tree.item(item, 'values')
-        if len(values) != 7:
+        if len(values) < 8:
             messagebox.showerror("错误", f"意外的数据结构: {values}")
             return
 
-        original_name, _, _, item_type, _, relative_path, _ = values
+        original_name, _, _, item_type, _, relative_path, _, _ = values[:8]
+        cdx_info = values[8] if len(values) > 8 else ''
         full_path = os.path.join(self.selected_folder, relative_path, original_name)
 
         # 获取用户输入的新名称
@@ -553,6 +673,8 @@ class OptimizedFileRenamerUI:
                 new_values[1] = new_name  # 更新预览名称
                 new_values[2] = new_name  # 更新最终名称
                 new_values[6] = '已手动重命名'  # 更新状态
+                if cdx_info:
+                    new_values[8] = cdx_info  # 保留 CDX 信息
                 self.tree.item(item, values=tuple(new_values))
 
                 # 添加到重命名历史
@@ -570,7 +692,7 @@ class OptimizedFileRenamerUI:
         if hasattr(self, 'menubar'):
             return  # 如果菜单已经创建，直接返回
 
-        menubar = tk.Menu(self.master)
+        menubar = tk.Menu(self.master, borderwidth=1, relief=tk.SOLID)
         self.master.config(menu=menubar)
 
         file_menu = tk.Menu(menubar, tearoff=0)
@@ -585,7 +707,6 @@ class OptimizedFileRenamerUI:
         view_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="查看", menu=view_menu)
         view_menu.add_command(label="重命名历史", command=self.show_history)
-        view_menu.add_checkbutton(label="暗黑模式", command=self.toggle_dark_mode)
 
         help_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="帮助", menu=help_menu)
@@ -610,6 +731,7 @@ class OptimizedFileRenamerUI:
 
         columns = ('原始文件名', '预览名称', '最终名称', '扩展名', '大小', '路径', '状态')
         self.tree = ttk.Treeview(tree_frame, columns=columns, show='headings')
+        self.tree.tag_configure('changed', foreground='#FFFF00')  # 亮黄色
 
         for col in columns:
             self.tree.heading(col, text=col, command=lambda _col=col: self.treeview_sort_column(_col, False))
@@ -664,11 +786,7 @@ class OptimizedFileRenamerUI:
     def natural_sort_key(self, s):
         return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', s)]
 
-    def toggle_dark_mode(self):
-        self.is_dark_mode = not self.is_dark_mode
-        theme = 'equilux' if self.is_dark_mode else 'clam'
-        self.style.theme_use(theme)
-        self.update_colors()
+
 
     def convert_size_to_bytes(self, size_str):
         if isinstance(size_str, str):
@@ -1035,10 +1153,15 @@ class OptimizedFileRenamerUI:
         cd_match = re.search(r'cd(\d+)$', base_name)
         if cd_match and ask_for_confirmation:
             if not self.confirm_cd_rename(name):
-                return name
+                return name, False
 
         cd_number = self._extract_cd_number(base_name)
         base_name = re.sub(r'_\d{3}_\d{3}$', '', base_name)
+
+        new_name = base_name + ext if ext else base_name
+        if new_name != name:
+            return new_name, True  # 返回新名称和一个标志，表示名称已更改
+        return new_name, False
 
         base_name = re.sub(r'[<>:"/\\|?*]', '', base_name)
         if self.remove_prefix_var.get():
@@ -1069,7 +1192,8 @@ class OptimizedFileRenamerUI:
         if cd_number:
             base_name += f"cd{int(cd_number)}"
 
-        return base_name + ext if ext else base_name
+        new_name = base_name + ext if ext else base_name
+        return new_name, new_name != name
 
 
 
@@ -1098,19 +1222,23 @@ class OptimizedFileRenamerUI:
 
             for dir_name in dirs:
                 full_path = os.path.join(root, dir_name)
-                new_dir_name = self.process_filename(dir_name)
-                yield (dir_name, new_dir_name, new_dir_name, '<DIR>', '', relative_path, '未修改')
+                new_dir_name, changed = self.process_filename(dir_name)
+                tag = 'changed' if changed else ''
+                yield (dir_name, new_dir_name, new_dir_name, '<DIR>', '', relative_path, '未修改', tag, '')
 
             for filename in files:
                 full_path = os.path.join(root, filename)
                 name, ext = os.path.splitext(filename)
-                new_name = self.process_filename(name)
+                new_name, changed = self.process_filename(name)
                 preview_name = new_name + ext
                 final_name = preview_name
                 file_size = self.get_file_size(full_path)
-                yield (filename, preview_name, final_name, ext, file_size, relative_path, '未修改')
+                tag = 'changed' if changed else ''
+                cdx_info = 'CDX' if self.is_cdx_file(filename) else ''
+                yield (filename, preview_name, final_name, ext, file_size, relative_path, '未修改', tag, cdx_info)
 
-
+    def is_cdx_file(self, filename):
+        return bool(re.search(r'cd\d+', filename, re.IGNORECASE))
 
     def process_file(self, file_info):
         root, filename = file_info
@@ -1127,10 +1255,13 @@ class OptimizedFileRenamerUI:
             logging.error(f"Error processing file {filename}: {str(e)}")
             return (filename, filename, filename, ext, "Error", relative_path, 'Error')
 
-
     def update_treeview(self, results):
         for result in results:
-            self.tree.insert("", "end", values=result, tags=('checked',))
+            values = result[:-1]
+            tag = result[-1]
+            item = self.tree.insert("", "end", values=values)
+            if tag == 'changed':
+                self.tree.item(item, tags=('changed',))
         self.statusbar.config(text="预览完成")
 
     def get_file_size(self, file_path):
@@ -1258,11 +1389,11 @@ class OptimizedFileRenamerUI:
 
         for item in selected_items:
             values = self.tree.item(item, 'values')
-            if len(values) != 7:
+            if len(values) < 7:
                 messagebox.showerror("错误", f"意外的数据结构: {values}")
                 continue
 
-            original_name, preview_name, final_name, item_type, size, relative_path, status = values
+            original_name, preview_name, final_name, item_type, size, relative_path, status = values[:7]
 
             if status == '未修改':
                 try:
@@ -1386,7 +1517,11 @@ class OptimizedFileRenamerUI:
 
         item = selected_items[0]
         values = self.tree.item(item, 'values')
-        original_name, _, _, _, _, relative_path, _ = values
+        if len(values) < 7:
+            messagebox.showerror("错误", f"意外的数据结构: {values}")
+            return
+
+        original_name, _, _, _, _, relative_path = values[:6]
         file_path = os.path.join(self.selected_folder, relative_path, original_name)
 
         if file_path in self.rename_history:
@@ -1403,7 +1538,6 @@ class OptimizedFileRenamerUI:
                 history_tree.insert("", "end", values=(timestamp, os.path.basename(new_name)))
         else:
             messagebox.showinfo("提示", "该文件没有重命名历史")
-        pass
 
     def _extract_cd_number(self, base_name):
         cd_match = re.search(r'_(\d{3})_\d{3}$', base_name)
@@ -1426,51 +1560,7 @@ class OptimizedFileRenamerUI:
                 base_name = base_name.replace(rule[0], rule[1])
         return base_name
 
-    def update_colors(self):
-        theme = self.themes[self.current_theme]
-        style_updates = {
-            'TFrame': {'background': theme['bg']},
-            'TLabel': {'background': theme['bg'], 'foreground': theme['fg']},
-            'TButton': {'background': theme['bg'], 'foreground': theme['fg']},
-            'Treeview': {'background': theme['bg'], 'foreground': theme['fg'], 'fieldbackground': theme['bg']},
-            'Treeview.Heading': {'background': theme['bg'], 'foreground': theme['fg']},
-            'Custom.TCheckbutton': {'background': theme['bg'], 'foreground': theme['fg']},
-        }
 
-        for style, options in style_updates.items():
-            self.style.configure(style, **options)
-
-        self.style.map('Custom.TCheckbutton',
-                       background=[('active', theme['active_bg'])],
-                       foreground=[('disabled', theme['disabled_fg'])])
-
-        self.master.config(bg=theme['bg'])
-        for widget in self.master.winfo_children():
-            self.update_widget_colors(widget, theme)
-
-    def async_update_colors(self):
-        asyncio.create_task(self.update_colors())
-
-    async def update_widgets(self, parent, bg_color, fg_color):
-        try:
-            parent.configure(background=bg_color)
-        except tk.TclError:
-            pass  # 忽略不支持背景色设置的小部件
-
-        for child in parent.winfo_children():
-            try:
-                if isinstance(child, (ttk.Widget, tk.Canvas)):
-                    child.configure(style='Custom.TWidget')
-                else:
-                    child.configure(background=bg_color)
-
-                if isinstance(child, tk.Text):
-                    child.configure(foreground=fg_color)
-            except tk.TclError:
-                pass  # 忽略不支持背景色或前景色设置的小部件
-
-            if child.winfo_children():
-                await self.update_widgets(child, bg_color, fg_color)
 
 
     def show_about(self):
@@ -1485,13 +1575,20 @@ class OptimizedFileRenamerUI:
         item = self.tree.identify_row(event.y)
         if item:
             self.tree.selection_set(item)
-            self.context_menu.post(event.x_root, event.y_root)
+            if self.context_menu:
+                self.context_menu.post(event.x_root, event.y_root)
+            else:
+                print("Context menu is not initialized")  # 用于调试
 
     def on_treeview_double_click(self, event):
         item = self.tree.identify_row(event.y)
         if item:
             values = self.tree.item(item, 'values')
-            original_name, _, _, _, _, relative_path, _ = values
+            if len(values) < 6:
+                messagebox.showerror("错误", f"意外的数据结构: {values}")
+                return
+
+            original_name, *_, relative_path = values[:6]
             file_path = os.path.join(self.selected_folder, relative_path, original_name)
             if os.path.exists(file_path):
                 self.open_file(file_path)
@@ -1501,11 +1598,14 @@ class OptimizedFileRenamerUI:
         if selected_items:
             item = selected_items[0]
             values = self.tree.item(item, 'values')
-            original_name, _, _, _, _, relative_path, _ = values
-            file_path = os.path.join(self.selected_folder, relative_path, original_name)
-            self.stop_video_playback()
-            future = self.loop.run_in_executor(self.executor, self.update_preview, file_path)
-            self.loop.call_soon_threadsafe(asyncio.create_task, future)
+            if len(values) >= 7:
+                original_name, _, _, _, _, relative_path, _ = values[:7]
+                file_path = os.path.join(self.selected_folder, relative_path, original_name)
+                self.stop_video_playback()
+                future = self.loop.run_in_executor(self.executor, self.update_preview, file_path)
+                self.loop.call_soon_threadsafe(asyncio.create_task, future)
+            else:
+                logging.error(f"Unexpected number of values in tree item: {len(values)}")
 
     def stop_video_playback(self):
         self.preview_cancel_event.set()
