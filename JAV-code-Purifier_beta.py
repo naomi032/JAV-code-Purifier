@@ -25,6 +25,8 @@ import warnings
 import cv2
 import numpy as np
 import time
+from functools import lru_cache
+from concurrent.futures import ThreadPoolExecutor
 
 
 
@@ -116,9 +118,36 @@ class OptimizedFileRenamerUI:
         self.master = master
         self.master.title('JAV-code-Purifier')
         self.master.geometry('1300x1000')  # 增加宽度和高度
+        self.create_menu()
         self.rename_mode = tk.StringVar(value="files")
         self.rename_mode.trace('w', self.on_rename_mode_change)
         self.all_items = []
+        self.themes = {
+            'light': {
+                'bg': '#f0f0f0',
+                'fg': '#000000',
+                'active_bg': '#e5e5e5',
+                'disabled_fg': '#a3a3a3'
+            },
+            'dark': {
+                'bg': '#2e2e2e',
+                'fg': '#ffffff',
+                'active_bg': '#3a3a3a',
+                'disabled_fg': '#6c6c6c'
+            },
+            'eye_friendly': {
+                'bg': '#e0e5c1',
+                'fg': '#2c3e50',
+                'active_bg': '#d1d6b2',
+                'disabled_fg': '#7f8c8d'
+            }
+        }
+        self.current_theme = 'light'
+        self.executor = ThreadPoolExecutor(max_workers=5)
+        self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
+        self.preview_task = None
+        self.preview_cancel_event = threading.Event()
 
         self.style = ttk.Style(self.master)
         self.style.theme_use('clam')
@@ -146,14 +175,71 @@ class OptimizedFileRenamerUI:
         self.preview_canvas = None
         self.preview_label = None
 
+
+
+        self.setup_ui()
+        self.load_state()
         self.style.configure("Custom.TCheckbutton", background="#f0f0f0", foreground="#000000")
         self.style.map("Custom.TCheckbutton",
                        background=[('active', '#e5e5e5')],
                        foreground=[('disabled', '#a3a3a3')])
 
-        self.setup_ui()
-        self.load_state()
+        self.last_resize_time = 0
+        self.master.bind("<Configure>", self.on_window_configure)
 
+    def on_window_configure(self, event):
+        # 如果是窗口大小改变事件
+        if event.widget == self.master:
+            current_time = time.time()
+            # 如果距离上次resize过去了至少100ms，才更新UI
+            if current_time - self.last_resize_time > 0.1:
+                self.last_resize_time = current_time
+                self.master.after(100, self.update_ui)
+
+    def toggle_theme(self):
+        themes = list(self.themes.keys())
+        current_index = themes.index(self.current_theme)
+        next_index = (current_index + 1) % len(themes)
+        self.current_theme = themes[next_index]
+        self.apply_theme()
+
+    def apply_theme(self):
+        theme = self.themes[self.current_theme]
+        style_updates = {
+            'TFrame': {'background': theme['bg']},
+            'TLabel': {'background': theme['bg'], 'foreground': theme['fg']},
+            'TButton': {'background': theme['bg'], 'foreground': theme['fg']},
+            'Treeview': {'background': theme['bg'], 'foreground': theme['fg'], 'fieldbackground': theme['bg']},
+            'Treeview.Heading': {'background': theme['bg'], 'foreground': theme['fg']},
+            'Custom.TCheckbutton': {'background': theme['bg'], 'foreground': theme['fg']},
+        }
+
+        for style, options in style_updates.items():
+            self.style.configure(style, **options)
+
+        self.style.map('Custom.TCheckbutton',
+                       background=[('active', theme['active_bg'])],
+                       foreground=[('disabled', theme['disabled_fg'])])
+
+        self.master.config(bg=theme['bg'])
+        for widget in self.master.winfo_children():
+            self.update_widget_colors(widget, theme)
+
+    def update_widget_colors(self, widget, theme):
+        try:
+            widget.config(bg=theme['bg'], fg=theme['fg'])
+        except tk.TclError:
+            pass  # 忽略不支持颜色设置的小部件
+
+        if isinstance(widget, tk.Text):
+            widget.config(bg=theme['bg'], fg=theme['fg'])
+
+        for child in widget.winfo_children():
+            self.update_widget_colors(child, theme)
+
+    def update_ui(self):
+        # 更新UI的代码
+        self.update_colors()  # 确保这个方法是轻量级的
 
     def setup_ui(self):
         main_frame = ttk.Frame(self.master)
@@ -493,6 +579,7 @@ class OptimizedFileRenamerUI:
         menubar.add_cascade(label="帮助", menu=help_menu)
         help_menu.add_command(label="关于", command=self.show_about)
 
+
     def create_folder_frame(self, parent):
         folder_frame = ttk.Frame(parent)
         folder_frame.pack(fill=tk.X, padx=10, pady=10)
@@ -533,37 +620,57 @@ class OptimizedFileRenamerUI:
         self.tree.bind("<<TreeviewSelect>>", self.on_treeview_select)
         self.tree.bind("<Button-3>", self.on_treeview_right_click)
         self.tree.bind("<Double-1>", self.on_treeview_double_click)
+        self.tree.bind("<<TreeviewOpen>>", self.load_treeview_data)
+
+    def load_treeview_data(self, event):
+        if not self.tree.get_children():
+            self.preview_files()
 
     def treeview_sort_column(self, col, reverse):
         l = [(self.tree.set(k, col), k) for k in self.tree.get_children('')]
 
-        if col == "大小":
-            l.sort(key=lambda t: self.convert_size_to_bytes(t[0]), reverse=reverse)
-        elif col in ["原始文件名", "预览名称", "最终名称"]:
-            l.sort(key=lambda t: self.natural_sort_key(t[0]), reverse=reverse)
-        else:
-            l.sort(reverse=reverse)
+        try:
+            if col == "大小":
+                l.sort(key=lambda t: self.convert_size_to_bytes(t[0]), reverse=reverse)
+            elif col in ["原始文件名", "预览名称", "最终名称"]:
+                l.sort(key=lambda t: self.natural_sort_key(t[0]), reverse=reverse)
+            else:
+                l.sort(key=lambda t: t[0].lower(), reverse=reverse)
+        except Exception as e:
+            print(f"排序错误: {e}")
+            return
 
         for index, (val, k) in enumerate(l):
             self.tree.move(k, '', index)
 
         self.tree.heading(col, command=lambda: self.treeview_sort_column(col, not reverse))
 
+    @lru_cache(maxsize=1000)
+
     def natural_sort_key(self, s):
         return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', s)]
 
+    def toggle_dark_mode(self):
+        self.is_dark_mode = not self.is_dark_mode
+        theme = 'equilux' if self.is_dark_mode else 'clam'
+        self.style.theme_use(theme)
+
+        # 使用after方法来延迟更新颜色
+        self.master.after(10, self.update_colors)
+
     def convert_size_to_bytes(self, size_str):
         if isinstance(size_str, str):
-            size_str = size_str.upper().replace(',', '')
-            if 'B' in size_str:
-                return float(size_str.replace('B', '').strip())
-            elif 'KB' in size_str:
-                return float(size_str.replace('KB', '').strip()) * 1024
-            elif 'MB' in size_str:
-                return float(size_str.replace('MB', '').strip()) * 1024 ** 2
-            elif 'GB' in size_str:
-                return float(size_str.replace('GB', '').strip()) * 1024 ** 3
+            size_str = size_str.upper().replace(',', '').strip()
+            units = {'B': 1, 'KB': 1024, 'MB': 1024**2, 'GB': 1024**3, 'TB': 1024**4}
+            match = re.match(r'^([\d.]+)\s*([BKMGT]B?)$', size_str)
+            if match:
+                number, unit = match.groups()
+                if unit not in units:
+                    unit = unit + 'B'
+                return float(number) * units[unit]
         return 0
+
+    @lru_cache(maxsize=1000)
 
     def confirm_cdx_renames(self, cdx_files):
         confirm_window = tk.Toplevel(self.master)
@@ -669,20 +776,31 @@ class OptimizedFileRenamerUI:
         hidden_items = []
 
         for item in self.all_items:
-            values = self.tree.item(item, 'values')
-            item_type = values[3]  # 假设类型信息在第4列
-            if (mode == "files" and item_type != '<DIR>') or (mode == "folders" and item_type == '<DIR>'):
-                visible_items.append(item)
-            else:
-                hidden_items.append(item)
+            try:
+                values = self.tree.item(item, 'values')
+                item_type = values[3]  # 假设类型信息在第4列
+                if (mode == "files" and item_type != '<DIR>') or (mode == "folders" and item_type == '<DIR>'):
+                    visible_items.append(item)
+                else:
+                    hidden_items.append(item)
+            except tk.TclError:
+                logging.warning(f"Item {item} not found in tree")
+                # 可能需要从 self.all_items 中移除这个项目
 
         # 隐藏不需要显示的项目
-        self.tree.detach(*hidden_items)
+        for item in hidden_items:
+            try:
+                self.tree.detach(item)
+            except tk.TclError:
+                logging.warning(f"Cannot detach item {item}")
 
         # 显示需要显示的项目
         for item in visible_items:
-            if self.tree.parent(item) == '':  # 如果项目当前没有父项
-                self.tree.reattach(item, '', 'end')  # 重新附加到根节点
+            try:
+                if self.tree.parent(item) == '':  # 如果项目当前没有父项
+                    self.tree.reattach(item, '', 'end')  # 重新附加到根节点
+            except tk.TclError:
+                logging.warning(f"Cannot reattach item {item}")
 
     def on_rename_mode_change(self, *args):
         self.refresh_treeview()
@@ -737,9 +855,23 @@ class OptimizedFileRenamerUI:
             self.tree.delete(item)
 
         self.file_paths.clear()
+        self.all_items = []
 
-        # 使用线程处理文件预览
-        threading.Thread(target=self.process_directory_thread, args=(self.selected_folder,)).start()
+        self.file_generator = self.generate_items(self.selected_folder)
+        self.process_batch()
+
+    def process_batch(self, batch_size=100):
+        for _ in range(batch_size):
+            try:
+                item = next(self.file_generator)
+                self.tree.insert("", "end", values=item)
+                self.all_items.append(item)
+            except StopIteration:
+                self.statusbar.config(text="预览完成")
+                self.refresh_treeview()
+                return
+
+        self.master.after(10, self.process_batch)
 
     def rename_folders(self):
         folders_to_rename = []
@@ -963,42 +1095,37 @@ class OptimizedFileRenamerUI:
                                    f"文件 '{filename}' 已经包含 'cdx' 后缀。\n是否仍要继续重命名？")
 
     def process_directory(self, directory, parent=''):
-        self.all_items = []  # 重置所有项目的列表
+        self.all_items = []
+        try:
+            for item in self.generate_items(directory):
+                try:
+                    self.tree.insert("", "end", values=item)
+                    self.all_items.append(item)
+                except tk.TclError as e:
+                    logging.error(f"Error inserting item into tree: {e}")
+                    # 可能需要跳过这个项目或采取其他措施
+            self.refresh_treeview()
+        except Exception as e:
+            logging.error(f"Error processing directory: {e}")
+            messagebox.showerror("错误", f"处理目录时发生错误：{e}")
+
+    def generate_items(self, directory):
         for root, dirs, files in os.walk(directory):
             relative_path = os.path.relpath(root, self.selected_folder)
 
-            # 处理文件夹
             folder_name = os.path.basename(root)
             new_folder_name = self.process_filename(folder_name)
-            if folder_name != new_folder_name or parent == '':
-                full_path = os.path.join(self.selected_folder, relative_path)
-                item = self.tree.insert("", "end", values=(
-                    folder_name, new_folder_name, new_folder_name, '<DIR>', '', relative_path, '未修改'
-                ))
-                self.file_paths[full_path] = item
-                self.all_items.append(item)
+            if folder_name != new_folder_name or relative_path == '.':
+                yield (folder_name, new_folder_name, new_folder_name, '<DIR>', '', relative_path, '未修改')
 
-            # 处理文件
             for filename in files:
                 full_path = os.path.join(root, filename)
-                if full_path in self.file_paths:
-                    continue  # 跳过重复文件
-
                 name, ext = os.path.splitext(filename)
-                original_name = filename
                 new_name = self.process_filename(name)
                 preview_name = new_name + ext
                 final_name = preview_name
-
                 file_size = self.get_file_size(full_path)
-
-                item = self.tree.insert("", "end", values=(
-                    original_name, preview_name, final_name, ext, file_size, relative_path, '未修改'
-                ))
-                self.file_paths[full_path] = item
-                self.all_items.append(item)
-
-        self.refresh_treeview()
+                yield (filename, preview_name, final_name, ext, file_size, relative_path, '未修改')
 
     def process_directory_thread(self, directory):
         if self.is_shutting_down:
@@ -1297,35 +1424,32 @@ class OptimizedFileRenamerUI:
     def async_update_colors(self):
         asyncio.run(self.update_colors())
 
-    async def update_colors(self):
-        bg_color = '#2e2e2e' if self.is_dark_mode else '#f0f0f0'
-        fg_color = '#ffffff' if self.is_dark_mode else '#000000'
-
-        # 批量更新样式
+    def update_colors(self):
+        theme = self.themes[self.current_theme]
         style_updates = {
-            'TFrame': {'background': bg_color},
-            'TLabel': {'background': bg_color, 'foreground': fg_color},
-            'TButton': {'background': bg_color, 'foreground': fg_color},
-            'Treeview': {'background': bg_color, 'foreground': fg_color, 'fieldbackground': bg_color},
-            'Treeview.Heading': {'background': bg_color, 'foreground': fg_color},
-            'Custom.TCheckbutton': {'background': bg_color, 'foreground': fg_color},
+            'TFrame': {'background': theme['bg']},
+            'TLabel': {'background': theme['bg'], 'foreground': theme['fg']},
+            'TButton': {'background': theme['bg'], 'foreground': theme['fg']},
+            'Treeview': {'background': theme['bg'], 'foreground': theme['fg'], 'fieldbackground': theme['bg']},
+            'Treeview.Heading': {'background': theme['bg'], 'foreground': theme['fg']},
+            'Custom.TCheckbutton': {'background': theme['bg'], 'foreground': theme['fg']},
         }
 
         for style, options in style_updates.items():
             self.style.configure(style, **options)
 
-        # 更新 Checkbutton 的 map
         self.style.map('Custom.TCheckbutton',
-                       background=[('active', '#3a3a3a' if self.is_dark_mode else '#e5e5e5')],
-                       foreground=[('disabled', '#6c6c6c' if self.is_dark_mode else '#a3a3a3')])
+                       background=[('active', theme['active_bg'])],
+                       foreground=[('disabled', theme['disabled_fg'])])
 
-        # 配置自定义 widget 样式
-        self.style.configure('Custom.TWidget', background=bg_color, foreground=fg_color)
+        self.master.config(bg=theme['bg'])
+        for widget in self.master.winfo_children():
+            self.update_widget_colors(widget, theme)
 
-        # 异步更新主窗口和子窗口
-        await self.async_update_widgets(self.master, bg_color, fg_color)
+    def async_update_colors(self):
+        asyncio.create_task(self.update_colors())
 
-    async def async_update_widgets(self, parent, bg_color, fg_color):
+    async def update_widgets(self, parent, bg_color, fg_color):
         try:
             parent.configure(background=bg_color)
         except tk.TclError:
@@ -1344,13 +1468,7 @@ class OptimizedFileRenamerUI:
                 pass  # 忽略不支持背景色或前景色设置的小部件
 
             if child.winfo_children():
-                await self.async_update_widgets(child, bg_color, fg_color)
-
-            await asyncio.sleep(0)  # 让出控制权，避免长时间阻塞
-
-
-
-
+                await self.update_widgets(child, bg_color, fg_color)
 
 
     def show_about(self):
@@ -1383,32 +1501,53 @@ class OptimizedFileRenamerUI:
             values = self.tree.item(item, 'values')
             original_name, _, _, _, _, relative_path, _ = values
             file_path = os.path.join(self.selected_folder, relative_path, original_name)
-            self.update_preview(file_path)
+            future = self.loop.run_in_executor(self.executor, self.update_preview, file_path)
+            self.loop.call_soon_threadsafe(asyncio.create_task, future)
 
     def update_preview(self, file_path):
-        if not hasattr(self, 'preview_label') or self.preview_label is None:
-            print("Warning: preview_label is not initialized")
+        if not os.path.exists(file_path):
+            self.master.after(0, lambda: self.preview_label.config(text="文件不存在"))
             return
 
-        if os.path.exists(file_path):
-            _, file_extension = os.path.splitext(file_path)
-            if file_extension.lower() in ['.mp4', '.avi', '.mov', '.mkv']:
-                self.preview_video(file_path)
-            else:
-                try:
-                    image = Image.open(file_path)
-                    image.thumbnail((400, 300))
-                    photo = ImageTk.PhotoImage(image)
-                    self.preview_canvas.delete("all")
-                    self.preview_canvas.create_image(200, 150, image=photo)
-                    self.preview_canvas.image = photo
-                    self.preview_label.config(text=f"文件名: {os.path.basename(file_path)}")
-                except:
-                    self.preview_canvas.delete("all")
-                    self.preview_label.config(text="无法预览此文件")
+        _, file_extension = os.path.splitext(file_path)
+        if file_extension.lower() in ['.mp4', '.avi', '.mov', '.mkv']:
+            self.master.after(0, lambda: self.preview_video(file_path))
         else:
-            self.preview_canvas.delete("all")
-            self.preview_label.config(text="文件不存在")
+            try:
+                image = Image.open(file_path)
+                self.master.after(0, lambda: self.display_image(image))
+                self.master.after(0, lambda: self.preview_label.config(text=f"文件名: {os.path.basename(file_path)}"))
+            except:
+                self.master.after(0, lambda: self.preview_canvas.delete("all"))
+                self.master.after(0, lambda: self.preview_label.config(text="无法预览此文件"))
+
+
+    def display_image(self, image):
+        # 获取画布的大小
+        canvas_width = self.preview_canvas.winfo_width()
+        canvas_height = self.preview_canvas.winfo_height()
+
+        # 计算图像和画布的宽高比
+        img_ratio = image.width / image.height
+        canvas_ratio = canvas_width / canvas_height
+
+        if img_ratio > canvas_ratio:
+            # 图像更宽，以宽度为准
+            new_width = canvas_width
+            new_height = int(canvas_width / img_ratio)
+        else:
+            # 图像更高，以高度为准
+            new_height = canvas_height
+            new_width = int(canvas_height * img_ratio)
+
+        # 调整图像大小
+        image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        photo = ImageTk.PhotoImage(image)
+
+        # 在画布中央显示图像
+        self.preview_canvas.delete("all")
+        self.preview_canvas.create_image(canvas_width / 2, canvas_height / 2, image=photo, anchor='center')
+        self.preview_canvas.image = photo
 
     def preview_video(self, video_path):
         if not hasattr(self, 'preview_label') or self.preview_label is None:
@@ -1424,17 +1563,18 @@ class OptimizedFileRenamerUI:
         total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
         duration = total_frames / fps
 
-        if duration <= 30:  # 修改这里，从20秒改为30秒
+        if duration <= 30:
             self.start_frames = [0]
         else:
-            # 均匀选择5个开始点
             self.start_frames = [int(i * total_frames / 5) for i in range(5)]
 
-        self.preview_duration = min(duration, 30)  # 修改这里，从20秒改为30秒
+        self.preview_duration = min(duration, 30)
         self.frames_per_segment = int(fps * self.preview_duration / 5)
         self.current_segment = 0
         self.frame_count = 0
         self.start_time = time.time()
+        self.transition_frames = int(fps * 0.5)  # 0.5秒的过渡时间
+        self.last_frame = None
 
         self.play_video_segment()
 
@@ -1450,12 +1590,17 @@ class OptimizedFileRenamerUI:
         ret, frame = self.cap.read()
         if ret:
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+            if self.last_frame is not None and self.frame_count < self.transition_frames:
+                # 执行淡入淡出过渡
+                alpha = self.frame_count / self.transition_frames
+                frame = cv2.addWeighted(self.last_frame, 1 - alpha, frame, alpha, 0)
+
+            # 将OpenCV的numpy数组转换为PIL图像
             image = Image.fromarray(frame)
-            image.thumbnail((400, 300))
-            photo = ImageTk.PhotoImage(image=image)
-            self.preview_canvas.delete("all")
-            self.preview_canvas.create_image(200, 150, image=photo)
-            self.preview_canvas.image = photo
+
+            # 使用display_image方法来显示视频帧
+            self.display_image(image)
 
             elapsed_time = time.time() - self.start_time
             self.preview_label.config(text=f"预览中: {int(elapsed_time)}秒 / {int(self.preview_duration)}秒")
@@ -1464,6 +1609,7 @@ class OptimizedFileRenamerUI:
             if self.frame_count >= self.frames_per_segment:
                 self.frame_count = 0
                 self.current_segment += 1
+                self.last_frame = frame  # 保存最后一帧用于下一个过渡
 
             if elapsed_time < self.preview_duration:
                 self.master.after(int(1000 / self.cap.get(cv2.CAP_PROP_FPS)), self.play_video_segment)
@@ -1518,7 +1664,20 @@ if __name__ == "__main__":
         root = ThemedTk(theme="clam")
         app = OptimizedFileRenamerUI(root)
         root.protocol("WM_DELETE_WINDOW", app.on_closing)
+
+
+        def run_async_loop():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_forever()
+
+
+        # 在单独的线程中运行asyncio事件循环
+        threading.Thread(target=run_async_loop, daemon=True).start()
+
+        # 在主线程中运行Tkinter主循环
         root.mainloop()
+
     except Exception as e:
         logging.error(f"Unhandled exception: {e}")
         messagebox.showerror("错误", f"程序遇到了一个未处理的错误：{e}")
