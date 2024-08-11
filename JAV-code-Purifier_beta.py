@@ -119,6 +119,7 @@ class OptimizedFileRenamerUI:
         self.master.title('JAV-code-Purifier')
         self.master.geometry('1300x1000')  # 增加宽度和高度
         self.create_menu()
+        self.create_context_menu()
         self.rename_mode = tk.StringVar(value="files")
         self.rename_mode.trace('w', self.on_rename_mode_change)
         self.all_items = []
@@ -161,7 +162,6 @@ class OptimizedFileRenamerUI:
         self.rename_history = {}
         self.file_types_to_delete = {}
         self.custom_rules = load_custom_rules()
-        self.create_context_menu()
 
         self.context_menu = None  # Initialize context_menu as None
         self.create_context_menu()  # Create the context menu
@@ -192,10 +192,15 @@ class OptimizedFileRenamerUI:
         # 如果是窗口大小改变事件
         if event.widget == self.master:
             current_time = time.time()
-            # 如果距离上次resize过去了至少100ms，才更新UI
-            if current_time - self.last_resize_time > 0.1:
+            # 如果距离上次resize过去了至少500ms，才更新UI
+            if current_time - self.last_resize_time > 0.5:
                 self.last_resize_time = current_time
-                self.master.after(100, self.update_ui)
+                self.master.after(100, self.update_layout)
+
+    def update_layout(self):
+        # 只更新布局，不更新颜色
+        # 这里可以添加任何需要在窗口大小变化时更新的布局代码
+        pass
 
     def toggle_theme(self):
         themes = list(self.themes.keys())
@@ -205,26 +210,29 @@ class OptimizedFileRenamerUI:
         self.apply_theme()
 
     def apply_theme(self):
-        theme = self.themes[self.current_theme]
-        style_updates = {
-            'TFrame': {'background': theme['bg']},
-            'TLabel': {'background': theme['bg'], 'foreground': theme['fg']},
-            'TButton': {'background': theme['bg'], 'foreground': theme['fg']},
-            'Treeview': {'background': theme['bg'], 'foreground': theme['fg'], 'fieldbackground': theme['bg']},
-            'Treeview.Heading': {'background': theme['bg'], 'foreground': theme['fg']},
-            'Custom.TCheckbutton': {'background': theme['bg'], 'foreground': theme['fg']},
-        }
+        if not hasattr(self, 'last_theme') or self.last_theme != self.current_theme:
+            theme = self.themes[self.current_theme]
+            style_updates = {
+                'TFrame': {'background': theme['bg']},
+                'TLabel': {'background': theme['bg'], 'foreground': theme['fg']},
+                'TButton': {'background': theme['bg'], 'foreground': theme['fg']},
+                'Treeview': {'background': theme['bg'], 'foreground': theme['fg'], 'fieldbackground': theme['bg']},
+                'Treeview.Heading': {'background': theme['bg'], 'foreground': theme['fg']},
+                'Custom.TCheckbutton': {'background': theme['bg'], 'foreground': theme['fg']},
+            }
 
-        for style, options in style_updates.items():
-            self.style.configure(style, **options)
+            for style, options in style_updates.items():
+                self.style.configure(style, **options)
 
-        self.style.map('Custom.TCheckbutton',
-                       background=[('active', theme['active_bg'])],
-                       foreground=[('disabled', theme['disabled_fg'])])
+            self.style.map('Custom.TCheckbutton',
+                           background=[('active', theme['active_bg'])],
+                           foreground=[('disabled', theme['disabled_fg'])])
 
-        self.master.config(bg=theme['bg'])
-        for widget in self.master.winfo_children():
-            self.update_widget_colors(widget, theme)
+            self.master.config(bg=theme['bg'])
+            for widget in self.master.winfo_children():
+                self.update_widget_colors(widget, theme)
+
+            self.last_theme = self.current_theme
 
     def update_widget_colors(self, widget, theme):
         try:
@@ -239,8 +247,8 @@ class OptimizedFileRenamerUI:
             self.update_widget_colors(child, theme)
 
     def update_ui(self):
-        # 更新UI的代码
-        self.update_colors()  # 确保这个方法是轻量级的
+        # 移除对 update_colors 的直接调用
+        pass
 
     def setup_ui(self):
         main_frame = ttk.Frame(self.master)
@@ -500,9 +508,12 @@ class OptimizedFileRenamerUI:
                        foreground=[('disabled', '#a3a3a3')])
 
     def create_context_menu(self):
+        if hasattr(self, 'context_menu'):
+            return  # 如果上下文菜单已经创建，直接返回
+
         self.context_menu = tk.Menu(self.master, tearoff=0)
         self.context_menu.add_command(label="重命名", command=self.rename_selected_file)
-        self.context_menu.add_command(label="手动修改名称", command=self.manual_rename)  # 新增
+        self.context_menu.add_command(label="手动修改名称", command=self.manual_rename)
         self.context_menu.add_command(label="删除", command=self.delete_selected_file)
         self.context_menu.add_command(label="查看重命名历史", command=self.show_file_rename_history)
         self.context_menu.add_separator()
@@ -555,8 +566,10 @@ class OptimizedFileRenamerUI:
         else:
             messagebox.showinfo("提示", "重命名已取消")
 
-
     def create_menu(self):
+        if hasattr(self, 'menubar'):
+            return  # 如果菜单已经创建，直接返回
+
         menubar = tk.Menu(self.master)
         self.master.config(menu=menubar)
 
@@ -577,6 +590,8 @@ class OptimizedFileRenamerUI:
         help_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="帮助", menu=help_menu)
         help_menu.add_command(label="关于", command=self.show_about)
+
+        self.menubar = menubar
 
 
     def create_folder_frame(self, parent):
@@ -1176,50 +1191,64 @@ class OptimizedFileRenamerUI:
             return
 
         mode = self.rename_mode.get()
-        cdx_files = []
+        items_to_rename = [item for item in self.tree.get_children() if self.tree.item(item, 'values')[6] == '未修改']
 
-        for item in self.tree.get_children():
+        if not items_to_rename:
+            messagebox.showinfo("提示", "没有需要重命名的项目")
+            return
+
+        # 收集 CDX 文件
+        cdx_files = []
+        for item in items_to_rename:
             values = self.tree.item(item, 'values')
-            original_name, _, final_name, item_type, _, relative_path, status = values
-            if status == '未修改' and (
-                    mode == "files" and item_type != '<DIR>' or mode == "folders" and item_type == '<DIR>'):
+            original_name, _, final_name, item_type, _, _, _ = values
+            if (mode == "files" and item_type != '<DIR>') or (mode == "folders" and item_type == '<DIR>'):
                 if re.search(r'cd\d+', original_name, re.IGNORECASE):
                     cdx_files.append((item, original_name, final_name))
 
+        # 如果有 CDX 文件，先确认
         if cdx_files:
             confirmed_files = self.confirm_cdx_renames(cdx_files)
-            confirmed_items = [item for item, original_name, _ in cdx_files if original_name in confirmed_files]
-        else:
-            confirmed_items = self.tree.get_children()
+            items_to_rename = [item for item in items_to_rename if
+                               item not in [x[0] for x in cdx_files] or self.tree.item(item, 'values')[
+                                   0] in confirmed_files]
 
-        if not confirmed_items:
-            messagebox.showinfo("提示", "没有选择要重命名的文件")
+        if not items_to_rename:
+            messagebox.showinfo("提示", "没有选择要重命名的项目")
             return
 
-        if messagebox.askyesno("确认重命名", f"您确定要重命名选中的{'文件' if mode == 'files' else '文件夹'}吗？"):
-            renamed_items = []
-            for item in confirmed_items:
-                values = self.tree.item(item, 'values')
-                original_name, _, final_name, item_type, _, relative_path, status = values
-                if status == '未修改' and (
-                        mode == "files" and item_type != '<DIR>' or mode == "folders" and item_type == '<DIR>'):
-                    try:
-                        original_path = os.path.join(self.selected_folder, relative_path, original_name)
-                        new_path = os.path.join(self.selected_folder, relative_path, final_name)
-                        os.rename(original_path, new_path)
-                        self.tree.set(item, column='状态', value='已重命名')
-                        renamed_items.append((original_path, new_path))
-                        self.add_rename_history(original_path, new_path)
-                    except Exception as e:
-                        self.tree.set(item, column='状态', value=f'错误: {str(e)}')
+        if messagebox.askyesno("确认重命名",
+                               f"您确定要重命名选中的 {len(items_to_rename)} 个{'文件' if mode == 'files' else '文件夹'}吗？"):
+            self.perform_renaming(items_to_rename)
 
-            if renamed_items:
-                messagebox.showinfo("完成",
-                                    f"重命名完成。\n已重命名 {len(renamed_items)} 个{'文件' if mode == 'files' else '文件夹'}。")
-            else:
-                messagebox.showinfo("提示", f"没有{'文件' if mode == 'files' else '文件夹'}被重命名")
+    def perform_renaming(self, items_to_rename):
+        total = len(items_to_rename)
+        renamed_count = 0
+        error_count = 0
 
-            self.refresh_preview()
+        progress = ttk.Progressbar(self.master, length=300, mode='determinate')
+        progress.pack(pady=10)
+
+        for i, item in enumerate(items_to_rename):
+            values = self.tree.item(item, 'values')
+            original_name, _, final_name, item_type, _, relative_path, _ = values
+            try:
+                original_path = os.path.join(self.selected_folder, relative_path, original_name)
+                new_path = os.path.join(self.selected_folder, relative_path, final_name)
+                os.rename(original_path, new_path)
+                self.tree.set(item, column='状态', value='已重命名')
+                self.add_rename_history(original_path, new_path)
+                renamed_count += 1
+            except Exception as e:
+                self.tree.set(item, column='状态', value=f'错误: {str(e)}')
+                error_count += 1
+
+            progress['value'] = (i + 1) / total * 100
+            self.master.update_idletasks()
+
+        progress.destroy()
+        messagebox.showinfo("完成", f"重命名完成。\n成功: {renamed_count}\n失败: {error_count}")
+        self.refresh_preview()
 
     def rename_selected_file(self):
         selected_items = self.tree.selection()
