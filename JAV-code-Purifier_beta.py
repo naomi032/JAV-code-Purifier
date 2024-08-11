@@ -1,10 +1,12 @@
 import os
+import sys
 import re
 import json
+import pyperclip
 import configparser
 import webbrowser
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, simpledialog, messagebox, ttk
 from PIL import Image, ImageTk
 import subprocess
 import shutil
@@ -19,6 +21,8 @@ import atexit
 import asyncio
 import io
 import base64
+import warnings
+
 
 
 # 常量定义
@@ -27,7 +31,7 @@ HISTORY_FILE = 'history.json'
 STATE_FILE = 'state.json'
 CUSTOM_RULES_FILE = 'custom_rules.json'
 logging.basicConfig(filename='renamer.log', level=logging.DEBUG)
-
+warnings.filterwarnings("ignore", category=UserWarning)
 
 def create_icon(png_path, icon_sizes=[(16, 16), (32, 32), (48, 48), (64, 64)]):
     with Image.open(png_path) as img:
@@ -109,6 +113,9 @@ class OptimizedFileRenamerUI:
         self.master = master
         self.master.title('JAV-code-Purifier')
         self.master.geometry('1300x1000')  # 增加宽度和高度
+        self.rename_mode = tk.StringVar(value="files")
+        self.rename_mode.trace('w', self.on_rename_mode_change)
+        self.all_items = []
 
         self.style = ttk.Style(self.master)
         self.style.theme_use('clam')
@@ -121,6 +128,17 @@ class OptimizedFileRenamerUI:
         self.rename_history = {}
         self.file_types_to_delete = {}
         self.custom_rules = load_custom_rules()
+        self.create_context_menu()
+
+        self.context_menu = None  # Initialize context_menu as None
+        self.create_context_menu()  # Create the context menu
+        self.replace_00_var = tk.BooleanVar(value=True)
+        self.remove_prefix_var = tk.BooleanVar(value=True)
+        self.remove_hhb_var = tk.BooleanVar(value=True)
+        self.retain_digits_var = tk.BooleanVar(value=True)
+        self.retain_format_var = tk.BooleanVar(value=True)
+        self.custom_prefix = tk.StringVar()
+        self.custom_suffix = tk.StringVar()
 
         self.setup_ui()
         self.load_state()
@@ -128,6 +146,7 @@ class OptimizedFileRenamerUI:
         self.style.map("Custom.TCheckbutton",
                        background=[('active', '#e5e5e5')],
                        foreground=[('disabled', '#a3a3a3')])
+
 
     def setup_ui(self):
         self.create_menu()
@@ -151,10 +170,135 @@ class OptimizedFileRenamerUI:
         self.create_buttons_frame(left_frame)
         self.create_statusbar()
 
+    def copy_name(self, name_type):
+        selected_items = self.tree.selection()
+        if not selected_items:
+            messagebox.showwarning("警告", "请选择一个文件或文件夹")
+            return
+
+        item = selected_items[0]
+        values = self.tree.item(item, 'values')
+        if len(values) != 7:
+            messagebox.showerror("错误", f"意外的数据结构: {values}")
+            return
+
+        if name_type == 'original':
+            name = values[0]  # 原始名称
+        else:
+            name = values[2]  # 新名称
+
+        pyperclip.copy(name)
+        messagebox.showinfo("复制成功", f"已复制{'原始' if name_type == 'original' else '新'}名称到剪贴板")
+
+    def show_rename_logic(self):
+        selected_items = self.tree.selection()
+        if not selected_items:
+            messagebox.showwarning("警告", "请选择一个文件或文件夹")
+            return
+
+        item = selected_items[0]
+        values = self.tree.item(item, 'values')
+        if len(values) != 7:
+            messagebox.showerror("错误", f"意外的数据结构: {values}")
+            return
+
+        original_name, _, final_name, _, _, _, _ = values
+
+        logic_explanation = self.explain_rename_logic(original_name, final_name)
+
+        logic_window = tk.Toplevel(self.master)
+        logic_window.title("改名逻辑说明")
+        logic_window.geometry("600x400")
+
+        text_widget = tk.Text(logic_window, wrap=tk.WORD)
+        text_widget.pack(expand=True, fill=tk.BOTH)
+        text_widget.insert(tk.END, logic_explanation)
+        text_widget.config(state=tk.DISABLED)
+
+    def explain_rename_logic(self, original_name, final_name):
+        explanation = f"原始名称: {original_name}\n新名称: {final_name}\n\n改名逻辑说明:\n\n"
+
+        if original_name == final_name:
+            explanation += "文件名没有发生变化，可能是因为以下原因：\n"
+            explanation += "1. 原名称已符合所有规则要求。\n"
+            explanation += "2. 没有启用任何会改变此文件名的规则。\n"
+        else:
+            explanation += "应用了以下规则：\n"
+            explanation += "1. 移除了特殊字符 (<>:\"/\\|?*)\n"
+            if self.remove_prefix_var.get():
+                explanation += "2. 删除了特定前缀 (如 'hhd800.com@' 或 'www.98T.la@')\n"
+            if self.replace_00_var.get():
+                explanation += "3. 将字母后面的 '00' 替换为 '-'\n"
+            if self.remove_hhb_var.get():
+                explanation += "4. 删除了 'hhb' 及其后续内容\n"
+            if self.retain_digits_var.get():
+                explanation += "5. 保留了横杠后的三位数字\n"
+            if self.retain_format_var.get():
+                explanation += "6. 保留了 xxx-yyy 格式（其中 xxx 为2-6个字母，yyy 为3位数字）\n"
+            explanation += "7. 应用了自定义规则（如果有）\n"
+            explanation += "8. 提取了产品代码并转换为'字母-数字'的格式\n"
+            if '_001_' in original_name or '_002_' in original_name or '_003_' in original_name:
+                explanation += "9. 根据文件序号添加了 cdX 后缀\n"
+            if original_name.endswith(os.path.splitext(final_name)[1]):
+                explanation += "10. 保留了原有的文件扩展名\n"
+            else:
+                explanation += "10. 移除了文件扩展名\n"
+            if self.custom_rules:
+                explanation += "应用了以下自定义规则：\n"
+                for rule in self.custom_rules:
+                    if rule[0] == "PREFIX":
+                        explanation += f"- 添加前缀: '{rule[1]}'\n"
+                    elif rule[0] == "SUFFIX":
+                        explanation += f"- 添加后缀: '{rule[1]}'\n"
+                    else:
+                        explanation += f"- 将 '{rule[0]}' 替换为 '{rule[1]}'\n"
+
+        return explanation
+
+
+    def open_selected_file(self):
+        selected_items = self.tree.selection()
+        if not selected_items:
+            messagebox.showwarning("警告", "请选择一个文件或文件夹")
+            return
+
+        item = selected_items[0]
+        values = self.tree.item(item, 'values')
+        original_name, _, _, _, _, relative_path, _ = values
+        file_path = os.path.join(self.selected_folder, relative_path, original_name)
+        self.open_file(file_path)
+
+    def open_file_location(self):
+        selected_items = self.tree.selection()
+        if not selected_items:
+            messagebox.showwarning("警告", "请选择一个文件或文件夹")
+            return
+
+        item = selected_items[0]
+        values = self.tree.item(item, 'values')
+        original_name, _, _, _, _, relative_path, _ = values
+        file_path = os.path.join(self.selected_folder, relative_path, original_name)
+        folder_path = os.path.dirname(file_path)
+
+        # Use a thread to open the file location
+        threading.Thread(target=self._open_file_location_thread, args=(folder_path,)).start()
+
+    def _open_file_location_thread(self, folder_path):
+        try:
+            if sys.platform == 'win32':
+                os.startfile(folder_path)
+            elif sys.platform == 'darwin':  # macOS
+                subprocess.Popen(['open', folder_path])
+            else:  # linux variants
+                subprocess.Popen(['xdg-open', folder_path])
+        except Exception as e:
+            self.master.after(0, lambda: messagebox.showerror("错误", f"无法打开文件位置: {e}"))
+
     def create_custom_rule_frame(self, parent):
         custom_rule_frame = ttk.LabelFrame(parent, text="自定义规则")
         custom_rule_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=10)
 
+        # 现有的替换规则部分
         ttk.Label(custom_rule_frame, text="要替换的内容:").grid(row=0, column=0, padx=5, pady=5)
         self.old_content_entry = ttk.Entry(custom_rule_frame)
         self.old_content_entry.grid(row=0, column=1, padx=5, pady=5)
@@ -163,14 +307,47 @@ class OptimizedFileRenamerUI:
         self.new_content_entry = ttk.Entry(custom_rule_frame)
         self.new_content_entry.grid(row=1, column=1, padx=5, pady=5)
 
-        ttk.Button(custom_rule_frame, text="创建规则", command=self.create_custom_rule).grid(row=2, column=0, columnspan=2, pady=5)
+        ttk.Button(custom_rule_frame, text="创建替换规则", command=self.create_custom_rule).grid(row=2, column=0, columnspan=2, pady=5)
+
+        # 新增前缀和后缀部分
+        ttk.Label(custom_rule_frame, text="自定义前缀:").grid(row=3, column=0, padx=5, pady=5)
+        self.prefix_entry = ttk.Entry(custom_rule_frame, textvariable=self.custom_prefix)
+        self.prefix_entry.grid(row=3, column=1, padx=5, pady=5)
+
+        ttk.Label(custom_rule_frame, text="自定义前缀:").grid(row=3, column=0, padx=5, pady=5)
+        self.prefix_entry = ttk.Entry(custom_rule_frame, textvariable=self.custom_prefix)
+        self.prefix_entry.grid(row=3, column=1, padx=5, pady=5)
+
+        ttk.Label(custom_rule_frame, text="自定义后缀:").grid(row=4, column=0, padx=5, pady=5)
+        self.suffix_entry = ttk.Entry(custom_rule_frame, textvariable=self.custom_suffix)
+        self.suffix_entry.grid(row=4, column=1, padx=5, pady=5)
+
+        ttk.Button(custom_rule_frame, text="应用前缀/后缀", command=self.apply_prefix_suffix).grid(row=5, column=0,
+                                                                                                   columnspan=2, pady=5)
 
         self.rules_listbox = tk.Listbox(custom_rule_frame, width=50, height=5)
-        self.rules_listbox.grid(row=3, column=0, columnspan=2, padx=5, pady=5)
+        self.rules_listbox.grid(row=6, column=0, columnspan=2, padx=5, pady=5)
 
-        ttk.Button(custom_rule_frame, text="删除规则", command=self.delete_custom_rule).grid(row=4, column=0, columnspan=2, pady=5)
+        ttk.Button(custom_rule_frame, text="删除规则", command=self.delete_custom_rule).grid(row=7, column=0, columnspan=2, pady=5)
 
         self.update_rules_listbox()
+
+    def apply_prefix_suffix(self):
+        prefix = self.custom_prefix.get()
+        suffix = self.custom_suffix.get()
+
+        if prefix:
+            self.custom_rules.append(("PREFIX", prefix))
+        if suffix:
+            self.custom_rules.append(("SUFFIX", suffix))
+
+        self.update_rules_listbox()
+        self.refresh_preview()  # 刷新预览以显示更改
+        messagebox.showinfo("成功", "前缀和后缀规则已添加")
+
+        # 清空输入框
+        self.custom_prefix.set("")
+        self.custom_suffix.set("")
 
     def create_preview_frame(self, parent):
         preview_frame = ttk.LabelFrame(parent, text="文件预览")
@@ -199,8 +376,14 @@ class OptimizedFileRenamerUI:
 
     def update_rules_listbox(self):
         self.rules_listbox.delete(0, tk.END)
-        for old, new in self.custom_rules:
-            self.rules_listbox.insert(tk.END, f"替换 '{old}' 为 '{new}'")
+        for rule in self.custom_rules:
+            if rule[0] == "PREFIX":
+                self.rules_listbox.insert(tk.END, f"添加前缀: '{rule[1]}'")
+            elif rule[0] == "SUFFIX":
+                self.rules_listbox.insert(tk.END, f"添加后缀: '{rule[1]}'")
+            else:
+                self.rules_listbox.insert(tk.END, f"替换 '{rule[0]}' 为 '{rule[1]}'")
+
 
 
     def configure_checkbox_style(self):
@@ -210,13 +393,62 @@ class OptimizedFileRenamerUI:
                        background=[('active', '#e5e5e5')],
                        foreground=[('disabled', '#a3a3a3')])
 
-
-
     def create_context_menu(self):
         self.context_menu = tk.Menu(self.master, tearoff=0)
         self.context_menu.add_command(label="重命名", command=self.rename_selected_file)
+        self.context_menu.add_command(label="手动修改名称", command=self.manual_rename)  # 新增
         self.context_menu.add_command(label="删除", command=self.delete_selected_file)
         self.context_menu.add_command(label="查看重命名历史", command=self.show_file_rename_history)
+        self.context_menu.add_separator()
+        self.context_menu.add_command(label="复制原始名称", command=lambda: self.copy_name('original'))
+        self.context_menu.add_command(label="复制新名称", command=lambda: self.copy_name('new'))
+        self.context_menu.add_command(label="查看改名逻辑", command=self.show_rename_logic)
+        self.context_menu.add_separator()
+        self.context_menu.add_command(label="打开文件", command=self.open_selected_file)
+        self.context_menu.add_command(label="打开文件位置", command=self.open_file_location)
+
+    def manual_rename(self):
+        selected_items = self.tree.selection()
+        if not selected_items:
+            messagebox.showwarning("警告", "请选择一个文件或文件夹")
+            return
+
+        item = selected_items[0]
+        values = self.tree.item(item, 'values')
+        if len(values) != 7:
+            messagebox.showerror("错误", f"意外的数据结构: {values}")
+            return
+
+        original_name, _, _, item_type, _, relative_path, _ = values
+        full_path = os.path.join(self.selected_folder, relative_path, original_name)
+
+        # 获取用户输入的新名称
+        new_name = simpledialog.askstring("手动重命名", "请输入新的文件名:", initialvalue=original_name)
+
+        if new_name and new_name != original_name:
+            try:
+                new_path = os.path.join(os.path.dirname(full_path), new_name)
+                os.rename(full_path, new_path)
+
+                # 更新treeview
+                new_values = list(values)
+                new_values[0] = new_name  # 更新原始文件名
+                new_values[1] = new_name  # 更新预览名称
+                new_values[2] = new_name  # 更新最终名称
+                new_values[6] = '已手动重命名'  # 更新状态
+                self.tree.item(item, values=tuple(new_values))
+
+                # 添加到重命名历史
+                self.add_rename_history(full_path, new_path)
+
+                messagebox.showinfo("成功", f"文件已重命名为: {new_name}")
+            except Exception as e:
+                messagebox.showerror("错误", f"重命名失败: {str(e)}")
+        elif new_name == original_name:
+            messagebox.showinfo("提示", "文件名未改变")
+        else:
+            messagebox.showinfo("提示", "重命名已取消")
+
 
     def create_menu(self):
         menubar = tk.Menu(self.master)
@@ -252,13 +484,13 @@ class OptimizedFileRenamerUI:
 
     def create_treeview(self, parent):
         tree_frame = ttk.Frame(parent)
-        tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)  # 修改这行
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
         columns = ('原始文件名', '预览名称', '最终名称', '扩展名', '大小', '路径', '状态')
         self.tree = ttk.Treeview(tree_frame, columns=columns, show='headings')
 
         for col in columns:
-            self.tree.heading(col, text=col)
+            self.tree.heading(col, text=col, command=lambda _col=col: self.treeview_sort_column(_col, False))
             if col in ['原始文件名', '预览名称', '最终名称', '路径']:
                 self.tree.column(col, width=200)
             else:
@@ -281,9 +513,116 @@ class OptimizedFileRenamerUI:
         self.tree.bind("<Button-3>", self.on_treeview_right_click)
         self.tree.bind("<Double-1>", self.on_treeview_double_click)
 
+    def treeview_sort_column(self, col, reverse):
+        l = [(self.tree.set(k, col), k) for k in self.tree.get_children('')]
+
+        if col == "大小":
+            l.sort(key=lambda t: self.convert_size_to_bytes(t[0]), reverse=reverse)
+        elif col in ["原始文件名", "预览名称", "最终名称"]:
+            l.sort(key=lambda t: self.natural_sort_key(t[0]), reverse=reverse)
+        else:
+            l.sort(reverse=reverse)
+
+        for index, (val, k) in enumerate(l):
+            self.tree.move(k, '', index)
+
+        self.tree.heading(col, command=lambda: self.treeview_sort_column(col, not reverse))
+
+    def natural_sort_key(self, s):
+        return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', s)]
+
+    def convert_size_to_bytes(self, size_str):
+        if isinstance(size_str, str):
+            size_str = size_str.upper().replace(',', '')
+            if 'B' in size_str:
+                return float(size_str.replace('B', '').strip())
+            elif 'KB' in size_str:
+                return float(size_str.replace('KB', '').strip()) * 1024
+            elif 'MB' in size_str:
+                return float(size_str.replace('MB', '').strip()) * 1024 ** 2
+            elif 'GB' in size_str:
+                return float(size_str.replace('GB', '').strip()) * 1024 ** 3
+        return 0
+
+    def confirm_cdx_renames(self, cdx_files):
+        confirm_window = tk.Toplevel(self.master)
+        confirm_window.title("确认重命名 CDX 文件")
+        confirm_window.geometry("800x600")
+
+        label = ttk.Label(confirm_window, text="以下文件包含 CDX 后缀，请选择要重命名的文件：")
+        label.pack(pady=10)
+
+        frame = ttk.Frame(confirm_window)
+        frame.pack(pady=10, padx=10, fill=tk.BOTH, expand=True)
+
+        tree = ttk.Treeview(frame, columns=("文件名", "新文件名"), show="headings")
+        tree.heading("文件名", text="原文件名")
+        tree.heading("新文件名", text="预览新文件名")
+        tree.column("文件名", width=350)
+        tree.column("新文件名", width=350)
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        scrollbar = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=tree.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        tree.configure(yscrollcommand=scrollbar.set)
+
+        for item, original_name, new_name in cdx_files:
+            tree.insert("", tk.END, values=(original_name, new_name), tags=("unchecked",))
+
+        tree.tag_configure("checked", background="lightgreen")
+        tree.tag_configure("unchecked", background="white")
+
+        def toggle_check(event):
+            item = tree.identify_row(event.y)
+            if item:
+                tags = tree.item(item, "tags")
+                if "checked" in tags:
+                    tree.item(item, tags=("unchecked",))
+                else:
+                    tree.item(item, tags=("checked",))
+
+        tree.bind("<ButtonRelease-1>", toggle_check)
+
+        var_all = tk.BooleanVar()
+        check_all = ttk.Checkbutton(confirm_window, text="全选", variable=var_all)
+        check_all.pack()
+
+        def toggle_all():
+            for item in tree.get_children():
+                if var_all.get():
+                    tree.item(item, tags=("checked",))
+                else:
+                    tree.item(item, tags=("unchecked",))
+
+        var_all.trace('w', lambda *args: toggle_all())
+
+        button_frame = ttk.Frame(confirm_window)
+        button_frame.pack(pady=10)
+
+        confirm_button = ttk.Button(button_frame, text="确认选择", command=lambda: confirm_window.quit())
+        confirm_button.pack(side=tk.LEFT, padx=5)
+
+        skip_all_button = ttk.Button(button_frame, text="全部不修改",
+                                     command=lambda: [tree.item(item, tags=("unchecked",)) for item in
+                                                      tree.get_children()] + [confirm_window.quit()])
+        skip_all_button.pack(side=tk.LEFT, padx=5)
+
+        confirm_window.mainloop()
+
+        confirmed_items = [tree.item(item)["values"][0] for item in tree.get_children() if
+                           "checked" in tree.item(item, "tags")]
+        confirm_window.destroy()
+
+        return confirmed_items
+
     def create_options_frame(self, parent):
         options_frame = ttk.LabelFrame(parent, text="重命名选项")
         options_frame.pack(fill=tk.X, padx=10, pady=10)
+
+        mode_frame = ttk.Frame(options_frame)
+        mode_frame.pack(fill=tk.X, padx=5, pady=5)
+        ttk.Radiobutton(mode_frame, text="重命名文件", variable=self.rename_mode, value="files").pack(side=tk.LEFT)
+        ttk.Radiobutton(mode_frame, text="重命名文件夹", variable=self.rename_mode, value="folders").pack(side=tk.LEFT)
 
         self.replace_00_var = tk.BooleanVar(value=True)
         self.remove_prefix_var = tk.BooleanVar(value=True)
@@ -302,6 +641,30 @@ class OptimizedFileRenamerUI:
         for text, var in options:
             cb = ttk.Checkbutton(options_frame, text=text, variable=var, style='Custom.TCheckbutton')
             cb.pack(anchor=tk.W, padx=5, pady=2)
+
+    def refresh_treeview(self):
+        mode = self.rename_mode.get()
+        visible_items = []
+        hidden_items = []
+
+        for item in self.all_items:
+            values = self.tree.item(item, 'values')
+            item_type = values[3]  # 假设类型信息在第4列
+            if (mode == "files" and item_type != '<DIR>') or (mode == "folders" and item_type == '<DIR>'):
+                visible_items.append(item)
+            else:
+                hidden_items.append(item)
+
+        # 隐藏不需要显示的项目
+        self.tree.detach(*hidden_items)
+
+        # 显示需要显示的项目
+        for item in visible_items:
+            if self.tree.parent(item) == '':  # 如果项目当前没有父项
+                self.tree.reattach(item, '', 'end')  # 重新附加到根节点
+
+    def on_rename_mode_change(self, *args):
+        self.refresh_treeview()
 
     def create_buttons_frame(self, parent):
         buttons_frame = ttk.Frame(parent)
@@ -357,6 +720,70 @@ class OptimizedFileRenamerUI:
         # 使用线程处理文件预览
         threading.Thread(target=self.process_directory_thread, args=(self.selected_folder,)).start()
 
+    def rename_folders(self):
+        folders_to_rename = []
+        for item in self.tree.get_children():
+            values = self.tree.item(item, 'values')
+            original_name, preview_name, final_name, item_type, size, relative_path, status = values
+            if status == '未修改' and item_type == '<DIR>':
+                folders_to_rename.append((item, values))
+
+        # 从深层文件夹开始重命名
+        for item, values in sorted(folders_to_rename, key=lambda x: x[1][5].count(os.sep), reverse=True):
+            original_name, preview_name, final_name, item_type, size, relative_path, status = values
+            original_path = os.path.join(self.selected_folder, relative_path, original_name)
+            new_name = self.process_filename(original_name, ask_for_confirmation=False)
+            new_path = os.path.join(self.selected_folder, relative_path, new_name)
+
+            if not os.path.exists(original_path):
+                self.tree.set(item, column='状态', value='错误: 文件夹不存在')
+                continue
+
+            if original_name != new_name:
+                try:
+                    os.rename(original_path, new_path)
+                    self.tree.set(item, column='状态', value='已重命名')
+                    self.add_rename_history(original_path, new_path)
+                    logging.info(f"Renamed folder: {original_path} to {new_path}")
+                except Exception as e:
+                    error_msg = f'错误: {str(e)}'
+                    self.tree.set(item, column='状态', value=error_msg)
+                    logging.error(f"Error renaming folder {original_path}: {str(e)}")
+            else:
+                self.tree.set(item, column='状态', value='无需重命名')
+
+        return [item for item, _ in folders_to_rename if self.tree.item(item, 'values')[-1] == '已重命名']
+
+    def rename_files(self):
+        renamed_files = []
+        for item in self.tree.get_children():
+            values = self.tree.item(item, 'values')
+            original_name, preview_name, final_name, item_type, size, relative_path, status = values
+
+            if status == '未修改' and item_type != '<DIR>':
+                original_path = os.path.join(self.selected_folder, relative_path, original_name)
+                new_name = self.process_filename(original_name)
+                new_path = os.path.join(self.selected_folder, relative_path, new_name)
+
+                if not os.path.exists(original_path):
+                    self.tree.set(item, column='状态', value='错误: 文件不存在')
+                    continue
+
+                if original_name != new_name:
+                    try:
+                        os.rename(original_path, new_path)
+                        self.tree.set(item, column='状态', value='已重命名')
+                        renamed_files.append([original_path, new_path])
+                        self.add_rename_history(original_path, new_path)
+                        logging.info(f"Renamed file: {original_path} to {new_path}")
+                    except Exception as e:
+                        error_msg = f'错误: {str(e)}'
+                        self.tree.set(item, column='状态', value=error_msg)
+                        logging.error(f"Error renaming file {original_path}: {str(e)}")
+                else:
+                    self.tree.set(item, column='状态', value='无需重命名')
+
+        return renamed_files
 
     def delete_small_videos(self):
         if not self.selected_folder:
@@ -433,35 +860,71 @@ class OptimizedFileRenamerUI:
             messagebox.showinfo("完成", f"已删除 {deleted_count} 个文件")
             self.refresh_preview()
 
-    def process_filename(self, name):
-        name = re.sub(r'[<>:"/\\|?*]', '', name)
-        if self.remove_prefix_var.get():
-            name = re.sub(r'hhd800\.com@|www\.98T\.la@', '', name)
+    def process_filename(self, name, ask_for_confirmation=True):
+        # Split the name into base name and extension
+        base_name, ext = os.path.splitext(name)
 
-        if self.replace_00_var.get() and not re.match(r'.*\d{3}$', name):
-            name = name.replace('00', '-', 1)
+        # Check if the file already has a cdx suffix
+        cd_match = re.search(r'cd(\d+)$', base_name)
+        if cd_match and ask_for_confirmation:
+            if not self.confirm_cd_rename(name):
+                return name  # Return the original name if user doesn't want to rename
+
+        # Extract the potential CD number from the original name format
+        cd_match = re.search(r'_(\d{3})_\d{3}$', base_name)
+        cd_number = cd_match.group(1) if cd_match else None
+
+        # Remove the _xxx_xxx suffix if present
+        base_name = re.sub(r'_\d{3}_\d{3}$', '', base_name)
+
+        # Apply the original rules to the base name
+        base_name = re.sub(r'[<>:"/\\|?*]', '', base_name)
+        if self.remove_prefix_var.get():
+            base_name = re.sub(r'hhd800\.com@|www\.98T\.la@', '', base_name)
+
+        if self.replace_00_var.get():
+            base_name = re.sub(r'([a-zA-Z]+)00(\d+)', r'\1-\2', base_name)
 
         if self.remove_hhb_var.get():
-            name = re.sub(r'hhb.*', '', name)
+            base_name = re.sub(r'hhb.*', '', base_name)
 
-        if self.retain_digits_var.get() and '-' in name:
-            parts = name.split('-')
+        if self.retain_digits_var.get() and '-' in base_name:
+            parts = base_name.split('-')
             if len(parts) > 1:
                 digits = re.findall(r'\d+', parts[1])
                 if digits:
                     parts[1] = digits[0][:3]
-                name = '-'.join(parts)
+                base_name = '-'.join(parts)
 
         if self.retain_format_var.get():
-            match = re.search(r'[A-Za-z]{2,6}-\d{3}', name)
+            match = re.search(r'[A-Za-z]{2,6}-\d{3}', base_name)
             if match:
-                name = match.group()
+                base_name = match.group()
 
-        # 应用自定义规则
-        for old, new in self.custom_rules:
-            name = name.replace(old, new)
+        # Apply custom rules
+        for rule in self.custom_rules:
+            if rule[0] == "PREFIX":
+                base_name = rule[1] + base_name
+            elif rule[0] == "SUFFIX":
+                base_name = base_name + rule[1]
+            else:
+                base_name = base_name.replace(rule[0], rule[1])
 
-        return name
+        # Apply the new rule to extract product code
+        match = re.search(r'([a-zA-Z]+)(\d+)', base_name)
+        if match:
+            letters, numbers = match.groups()
+            base_name = f"{letters.lower()}-{numbers}"
+
+        # Add CD suffix if applicable
+        if cd_number:
+            base_name += f"cd{int(cd_number)}"
+
+        # Combine the processed base name with the original extension
+        if ext:
+            return base_name + ext
+        else:
+            return base_name
 
     async def process_directory_async(self, directory):
         files = []
@@ -474,9 +937,27 @@ class OptimizedFileRenamerUI:
                                              lambda: list(map(self.process_file, files)))
         self.master.after(0, self.update_treeview, results)
 
+    def confirm_cd_rename(self, filename):
+        return messagebox.askyesno("确认重命名",
+                                   f"文件 '{filename}' 已经包含 'cdx' 后缀。\n是否仍要继续重命名？")
+
     def process_directory(self, directory, parent=''):
+        self.all_items = []  # 重置所有项目的列表
         for root, dirs, files in os.walk(directory):
             relative_path = os.path.relpath(root, self.selected_folder)
+
+            # 处理文件夹
+            folder_name = os.path.basename(root)
+            new_folder_name = self.process_filename(folder_name)
+            if folder_name != new_folder_name or parent == '':
+                full_path = os.path.join(self.selected_folder, relative_path)
+                item = self.tree.insert("", "end", values=(
+                    folder_name, new_folder_name, new_folder_name, '<DIR>', '', relative_path, '未修改'
+                ))
+                self.file_paths[full_path] = item
+                self.all_items.append(item)
+
+            # 处理文件
             for filename in files:
                 full_path = os.path.join(root, filename)
                 if full_path in self.file_paths:
@@ -490,13 +971,19 @@ class OptimizedFileRenamerUI:
 
                 file_size = self.get_file_size(full_path)
 
-                self.tree.insert("", "end", values=(original_name, preview_name, final_name, ext, file_size, relative_path, '未修改'), tags=('checked',))
-                self.file_paths[full_path] = True
+                item = self.tree.insert("", "end", values=(
+                    original_name, preview_name, final_name, ext, file_size, relative_path, '未修改'
+                ))
+                self.file_paths[full_path] = item
+                self.all_items.append(item)
+
+        self.refresh_treeview()
 
     def process_directory_thread(self, directory):
         if self.is_shutting_down:
             return
-        asyncio.run(self.process_directory_async(directory))
+        self.process_directory(directory)
+        self.master.after(0, self.statusbar.config, {"text": "预览完成"})
 
 
     def process_file(self, file_info):
@@ -504,11 +991,16 @@ class OptimizedFileRenamerUI:
         full_path = os.path.join(root, filename)
         relative_path = os.path.relpath(root, self.selected_folder)
         name, ext = os.path.splitext(filename)
-        new_name = self.process_filename(name)
-        preview_name = new_name + ext
-        final_name = preview_name
-        file_size = self.get_file_size(full_path)
-        return (filename, preview_name, final_name, ext, file_size, relative_path, '未修改')
+        try:
+            new_name = self.process_filename(name)
+            preview_name = new_name + ext
+            final_name = preview_name
+            file_size = self.get_file_size(full_path)
+            return (filename, preview_name, final_name, ext, file_size, relative_path, '未修改')
+        except Exception as e:
+            logging.error(f"Error processing file {filename}: {str(e)}")
+            return (filename, filename, filename, ext, "Error", relative_path, 'Error')
+
 
     def update_treeview(self, results):
         for result in results:
@@ -567,54 +1059,95 @@ class OptimizedFileRenamerUI:
         except:
             return None
 
-
     def start_renaming(self):
         if not self.selected_folder:
             messagebox.showwarning("警告", "请先选择一个文件夹")
             return
 
-        if messagebox.askyesno("确认重命名", "您确定要重命名这些文件吗？"):
-            self.rename_files()
-
-    def rename_files(self):
-        history = load_history()
-        rename_history = []
+        mode = self.rename_mode.get()
+        cdx_files = []
 
         for item in self.tree.get_children():
             values = self.tree.item(item, 'values')
-            original_name, preview_name, final_name, ext, size, relative_path, status = values
+            original_name, _, final_name, item_type, _, relative_path, status = values
+            if status == '未修改' and (
+                    mode == "files" and item_type != '<DIR>' or mode == "folders" and item_type == '<DIR>'):
+                if re.search(r'cd\d+', original_name, re.IGNORECASE):
+                    cdx_files.append((item, original_name, final_name))
+
+        if cdx_files:
+            confirmed_files = self.confirm_cdx_renames(cdx_files)
+            confirmed_items = [item for item, original_name, _ in cdx_files if original_name in confirmed_files]
+        else:
+            confirmed_items = self.tree.get_children()
+
+        if not confirmed_items:
+            messagebox.showinfo("提示", "没有选择要重命名的文件")
+            return
+
+        if messagebox.askyesno("确认重命名", f"您确定要重命名选中的{'文件' if mode == 'files' else '文件夹'}吗？"):
+            renamed_items = []
+            for item in confirmed_items:
+                values = self.tree.item(item, 'values')
+                original_name, _, final_name, item_type, _, relative_path, status = values
+                if status == '未修改' and (
+                        mode == "files" and item_type != '<DIR>' or mode == "folders" and item_type == '<DIR>'):
+                    try:
+                        original_path = os.path.join(self.selected_folder, relative_path, original_name)
+                        new_path = os.path.join(self.selected_folder, relative_path, final_name)
+                        os.rename(original_path, new_path)
+                        self.tree.set(item, column='状态', value='已重命名')
+                        renamed_items.append((original_path, new_path))
+                        self.add_rename_history(original_path, new_path)
+                    except Exception as e:
+                        self.tree.set(item, column='状态', value=f'错误: {str(e)}')
+
+            if renamed_items:
+                messagebox.showinfo("完成",
+                                    f"重命名完成。\n已重命名 {len(renamed_items)} 个{'文件' if mode == 'files' else '文件夹'}。")
+            else:
+                messagebox.showinfo("提示", f"没有{'文件' if mode == 'files' else '文件夹'}被重命名")
+
+            self.refresh_preview()
+
+    def rename_selected_file(self):
+        selected_items = self.tree.selection()
+        if not selected_items:
+            messagebox.showwarning("警告", "请选择一个文件或文件夹")
+            return
+
+        for item in selected_items:
+            values = self.tree.item(item, 'values')
+            if len(values) != 7:
+                messagebox.showerror("错误", f"意外的数据结构: {values}")
+                continue
+
+            original_name, preview_name, final_name, item_type, size, relative_path, status = values
 
             if status == '未修改':
-                original_path = os.path.join(self.selected_folder, relative_path, original_name)
-                new_path = os.path.join(self.selected_folder, relative_path, final_name)
-
-                if not os.path.exists(original_path):
-                    self.tree.set(item, column='状态', value='错误: 文件不存在')
-                    continue
-
-                if not os.access(os.path.dirname(original_path), os.W_OK):
-                    self.tree.set(item, column='状态', value='错误: 没有写入权限')
-                    continue
-
                 try:
+                    original_path = os.path.join(self.selected_folder, relative_path, original_name)
+                    new_path = os.path.join(self.selected_folder, relative_path, final_name)
+
+                    if not os.path.exists(original_path):
+                        self.tree.set(item, column='状态', value='错误: 原文件或文件夹不存在')
+                        continue
+
                     os.rename(original_path, new_path)
                     self.tree.set(item, column='状态', value='已重命名')
-                    rename_history.append([original_path, new_path])
                     self.add_rename_history(original_path, new_path)
-                    logging.info(f"Renamed: {original_path} to {new_path}")
+
+                    if item_type == '<DIR>':
+                        logging.info(f"Renamed folder: {original_path} to {new_path}")
+                    else:
+                        logging.info(f"Renamed file: {original_path} to {new_path}")
+
                 except Exception as e:
                     error_msg = f'错误: {str(e)}'
                     self.tree.set(item, column='状态', value=error_msg)
                     logging.error(f"Error renaming {original_path}: {str(e)}")
 
-        if rename_history:
-            history.extend(rename_history)
-            save_history(history)
-            messagebox.showinfo("完成", "文件重命名完成")
-        else:
-            messagebox.showinfo("提示", "没有文件被重命名")
-
-        self.preview_files()
+        self.refresh_preview()
 
     def add_rename_history(self, original_path, new_path):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -632,43 +1165,37 @@ class OptimizedFileRenamerUI:
     def refresh_preview(self):
         self.preview_files()
 
-    def rename_selected_file(self):
-        selected_items = self.tree.selection()
-        if not selected_items:
-            messagebox.showwarning("警告", "请选择一个文件")
-            return
-
-        for item in selected_items:
-            values = self.tree.item(item, 'values')
-            original_name, preview_name, final_name, ext, status = values
-            if status == '未修改':
-                try:
-                    original_path = os.path.join(self.selected_folder, original_name)
-                    new_path = os.path.join(self.selected_folder, final_name)
-                    os.rename(original_path, new_path)
-                    self.tree.set(item, 'status', '已重命名')
-                except Exception as e:
-                    self.tree.set(item, 'status', f'错误: {e}')
 
     def delete_selected_file(self):
         selected_items = self.tree.selection()
         if not selected_items:
-            messagebox.showwarning("警告", "请选择一个文件")
+            messagebox.showwarning("警告", "请选择一个文件或文件夹")
             return
 
-        if messagebox.askyesno("确认删除", "您确定要删除这些文件吗？"):
+        if messagebox.askyesno("确认删除", "您确定要删除这些文件或文件夹吗？"):
             for item in selected_items:
                 values = self.tree.item(item, 'values')
-                original_name, _, _, _, _, relative_path, _ = values  # 匹配新的列结构
+                if len(values) != 7:
+                    messagebox.showerror("错误", f"意外的数据结构: {values}")
+                    continue
+
+                original_name, _, _, item_type, _, relative_path, _ = values
                 try:
-                    file_path = os.path.join(self.selected_folder, relative_path, original_name)
-                    if os.path.exists(file_path):
-                        os.remove(file_path)
+                    full_path = os.path.join(self.selected_folder, relative_path, original_name)
+                    if os.path.exists(full_path):
+                        if item_type == '<DIR>':
+                            shutil.rmtree(full_path)
+                            logging.info(f"Deleted folder: {full_path}")
+                        else:
+                            os.remove(full_path)
+                            logging.info(f"Deleted file: {full_path}")
                         self.tree.delete(item)
                     else:
-                        self.tree.set(item, 'status', '错误: 文件不存在')
+                        messagebox.showwarning("警告", f"文件或文件夹不存在: {full_path}")
                 except Exception as e:
-                    self.tree.set(item, 'status', f'错误: {e}')
+                    error_msg = f'错误: {str(e)}'
+                    messagebox.showerror("删除错误", error_msg)
+                    logging.error(f"Error deleting {full_path}: {str(e)}")
 
             self.refresh_preview()
 
@@ -679,13 +1206,16 @@ class OptimizedFileRenamerUI:
             return
 
         last_rename = history.pop()
-        original_name, final_name = last_rename
+        original_path, new_path = last_rename
         try:
-            original_path = os.path.join(self.selected_folder, final_name)
-            new_path = os.path.join(self.selected_folder, original_name)
-            os.rename(original_path, new_path)
+            if os.path.isdir(new_path):
+                # 如果是文件夹，需要特殊处理
+                shutil.move(new_path, original_path)
+            else:
+                os.rename(new_path, original_path)
             save_history(history)
             self.preview_files()
+            messagebox.showinfo("成功", "已成功撤销上一次重命名操作")
         except Exception as e:
             messagebox.showerror("错误", f"无法撤销重命名: {e}")
 
@@ -733,6 +1263,7 @@ class OptimizedFileRenamerUI:
                 history_tree.insert("", "end", values=(timestamp, os.path.basename(new_name)))
         else:
             messagebox.showinfo("提示", "该文件没有重命名历史")
+        pass
 
     def toggle_dark_mode(self):
         self.is_dark_mode = not self.is_dark_mode
