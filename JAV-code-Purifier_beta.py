@@ -148,6 +148,7 @@ class OptimizedFileRenamerUI:
         asyncio.set_event_loop(self.loop)
         self.preview_task = None
         self.preview_cancel_event = threading.Event()
+        self.video_playing = False
 
         self.style = ttk.Style(self.master)
         self.style.theme_use('clam')
@@ -411,13 +412,10 @@ class OptimizedFileRenamerUI:
         self.new_content_entry = ttk.Entry(custom_rule_frame)
         self.new_content_entry.grid(row=1, column=1, padx=5, pady=5)
 
-        ttk.Button(custom_rule_frame, text="创建替换规则", command=self.create_custom_rule).grid(row=2, column=0, columnspan=2, pady=5)
+        ttk.Button(custom_rule_frame, text="创建替换规则", command=self.create_custom_rule).grid(row=2, column=0,
+                                                                                                 columnspan=2, pady=5)
 
         # 新增前缀和后缀部分
-        ttk.Label(custom_rule_frame, text="自定义前缀:").grid(row=3, column=0, padx=5, pady=5)
-        self.prefix_entry = ttk.Entry(custom_rule_frame, textvariable=self.custom_prefix)
-        self.prefix_entry.grid(row=3, column=1, padx=5, pady=5)
-
         ttk.Label(custom_rule_frame, text="自定义前缀:").grid(row=3, column=0, padx=5, pady=5)
         self.prefix_entry = ttk.Entry(custom_rule_frame, textvariable=self.custom_prefix)
         self.prefix_entry.grid(row=3, column=1, padx=5, pady=5)
@@ -432,7 +430,8 @@ class OptimizedFileRenamerUI:
         self.rules_listbox = tk.Listbox(custom_rule_frame, width=50, height=5)
         self.rules_listbox.grid(row=6, column=0, columnspan=2, padx=5, pady=5)
 
-        ttk.Button(custom_rule_frame, text="删除规则", command=self.delete_custom_rule).grid(row=7, column=0, columnspan=2, pady=5)
+        ttk.Button(custom_rule_frame, text="删除规则", command=self.delete_custom_rule).grid(row=7, column=0,
+                                                                                             columnspan=2, pady=5)
 
         self.update_rules_listbox()
 
@@ -654,9 +653,7 @@ class OptimizedFileRenamerUI:
         self.is_dark_mode = not self.is_dark_mode
         theme = 'equilux' if self.is_dark_mode else 'clam'
         self.style.theme_use(theme)
-
-        # 使用after方法来延迟更新颜色
-        self.master.after(10, self.update_colors)
+        self.update_colors()
 
     def convert_size_to_bytes(self, size_str):
         if isinstance(size_str, str):
@@ -785,7 +782,6 @@ class OptimizedFileRenamerUI:
                     hidden_items.append(item)
             except tk.TclError:
                 logging.warning(f"Item {item} not found in tree")
-                # 可能需要从 self.all_items 中移除这个项目
 
         # 隐藏不需要显示的项目
         for item in hidden_items:
@@ -802,8 +798,14 @@ class OptimizedFileRenamerUI:
             except tk.TclError:
                 logging.warning(f"Cannot reattach item {item}")
 
+        # 更新状态栏
+        visible_count = len(visible_items)
+        self.statusbar.config(text=f"显示 {visible_count} 个{'文件' if mode == 'files' else '文件夹'}")
+
     def on_rename_mode_change(self, *args):
         self.refresh_treeview()
+        mode = self.rename_mode.get()
+        self.start_button.config(text=f"开始重命名{'文件' if mode == 'files' else '文件夹'}")
 
     def create_buttons_frame(self, parent):
         buttons_frame = ttk.Frame(parent)
@@ -1014,23 +1016,16 @@ class OptimizedFileRenamerUI:
             self.refresh_preview()
 
     def process_filename(self, name, ask_for_confirmation=True):
-        # Split the name into base name and extension
         base_name, ext = os.path.splitext(name)
 
-        # Check if the file already has a cdx suffix
         cd_match = re.search(r'cd(\d+)$', base_name)
         if cd_match and ask_for_confirmation:
             if not self.confirm_cd_rename(name):
-                return name  # Return the original name if user doesn't want to rename
+                return name
 
-        # Extract the potential CD number from the original name format
-        cd_match = re.search(r'_(\d{3})_\d{3}$', base_name)
-        cd_number = cd_match.group(1) if cd_match else None
-
-        # Remove the _xxx_xxx suffix if present
+        cd_number = self._extract_cd_number(base_name)
         base_name = re.sub(r'_\d{3}_\d{3}$', '', base_name)
 
-        # Apply the original rules to the base name
         base_name = re.sub(r'[<>:"/\\|?*]', '', base_name)
         if self.remove_prefix_var.get():
             base_name = re.sub(r'hhd800\.com@|www\.98T\.la@', '', base_name)
@@ -1054,41 +1049,15 @@ class OptimizedFileRenamerUI:
             if match:
                 base_name = match.group()
 
-        # Apply custom rules
-        for rule in self.custom_rules:
-            if rule[0] == "PREFIX":
-                base_name = rule[1] + base_name
-            elif rule[0] == "SUFFIX":
-                base_name = base_name + rule[1]
-            else:
-                base_name = base_name.replace(rule[0], rule[1])
+        base_name = self._apply_custom_rules(base_name)
+        base_name = self._extract_product_code(base_name)
 
-        # Apply the new rule to extract product code
-        match = re.search(r'([a-zA-Z]+)(\d+)', base_name)
-        if match:
-            letters, numbers = match.groups()
-            base_name = f"{letters.lower()}-{numbers}"
-
-        # Add CD suffix if applicable
         if cd_number:
             base_name += f"cd{int(cd_number)}"
 
-        # Combine the processed base name with the original extension
-        if ext:
-            return base_name + ext
-        else:
-            return base_name
+        return base_name + ext if ext else base_name
 
-    async def process_directory_async(self, directory):
-        files = []
-        for root, dirs, filenames in os.walk(directory):
-            for filename in filenames:
-                files.append((root, filename))
 
-        loop = asyncio.get_event_loop()
-        results = await loop.run_in_executor(self.executor,
-                                             lambda: list(map(self.process_file, files)))
-        self.master.after(0, self.update_treeview, results)
 
     def confirm_cd_rename(self, filename):
         return messagebox.askyesno("确认重命名",
@@ -1127,11 +1096,6 @@ class OptimizedFileRenamerUI:
                 file_size = self.get_file_size(full_path)
                 yield (filename, preview_name, final_name, ext, file_size, relative_path, '未修改')
 
-    def process_directory_thread(self, directory):
-        if self.is_shutting_down:
-            return
-        self.process_directory(directory)
-        self.master.after(0, self.statusbar.config, {"text": "预览完成"})
 
 
     def process_file(self, file_info):
@@ -1413,16 +1377,26 @@ class OptimizedFileRenamerUI:
             messagebox.showinfo("提示", "该文件没有重命名历史")
         pass
 
-    def toggle_dark_mode(self):
-        self.is_dark_mode = not self.is_dark_mode
-        theme = 'equilux' if self.is_dark_mode else 'clam'
-        self.style.theme_use(theme)
+    def _extract_cd_number(self, base_name):
+        cd_match = re.search(r'_(\d{3})_\d{3}$', base_name)
+        return cd_match.group(1) if cd_match else None
 
-        # 使用异步方法更新颜色
-        self.master.after(10, self.async_update_colors)
+    def _extract_product_code(self, base_name):
+        match = re.search(r'([a-zA-Z]+)(\d+)', base_name)
+        if match:
+            letters, numbers = match.groups()
+            return f"{letters.lower()}-{numbers}"
+        return base_name
 
-    def async_update_colors(self):
-        asyncio.run(self.update_colors())
+    def _apply_custom_rules(self, base_name):
+        for rule in self.custom_rules:
+            if rule[0] == "PREFIX":
+                base_name = rule[1] + base_name
+            elif rule[0] == "SUFFIX":
+                base_name = base_name + rule[1]
+            else:
+                base_name = base_name.replace(rule[0], rule[1])
+        return base_name
 
     def update_colors(self):
         theme = self.themes[self.current_theme]
@@ -1501,8 +1475,16 @@ class OptimizedFileRenamerUI:
             values = self.tree.item(item, 'values')
             original_name, _, _, _, _, relative_path, _ = values
             file_path = os.path.join(self.selected_folder, relative_path, original_name)
+            self.stop_video_playback()
             future = self.loop.run_in_executor(self.executor, self.update_preview, file_path)
             self.loop.call_soon_threadsafe(asyncio.create_task, future)
+
+    def stop_video_playback(self):
+        self.preview_cancel_event.set()
+        if hasattr(self, 'cap') and self.cap.isOpened():
+            self.cap.release()
+        self.video_playing = False
+
 
     def update_preview(self, file_path):
         if not os.path.exists(file_path):
@@ -1511,15 +1493,20 @@ class OptimizedFileRenamerUI:
 
         _, file_extension = os.path.splitext(file_path)
         if file_extension.lower() in ['.mp4', '.avi', '.mov', '.mkv']:
-            self.master.after(0, lambda: self.preview_video(file_path))
-        else:
+            self.master.after(0, self.preview_video, file_path)
+        elif file_extension.lower() in ['.jpg', '.jpeg', '.png', '.gif', '.bmp']:
             try:
                 image = Image.open(file_path)
-                self.master.after(0, lambda: self.display_image(image))
+                self.master.after(0, self.display_image, image)
                 self.master.after(0, lambda: self.preview_label.config(text=f"文件名: {os.path.basename(file_path)}"))
-            except:
+            except Exception as e:
+                logging.error(f"Error opening image file: {e}")
                 self.master.after(0, lambda: self.preview_canvas.delete("all"))
-                self.master.after(0, lambda: self.preview_label.config(text="无法预览此文件"))
+                self.master.after(0, lambda: self.preview_label.config(text="无法预览此图片文件"))
+        else:
+            self.master.after(0, lambda: self.preview_canvas.delete("all"))
+            self.master.after(0, lambda: self.preview_label.config(text="无法预览此文件类型"))
+
 
 
     def display_image(self, image):
@@ -1550,37 +1537,45 @@ class OptimizedFileRenamerUI:
         self.preview_canvas.image = photo
 
     def preview_video(self, video_path):
-        if not hasattr(self, 'preview_label') or self.preview_label is None:
-            print("Warning: preview_label is not initialized")
-            return
+        self.stop_video_playback()
+        self.preview_cancel_event.clear()
+        self.video_playing = True
 
-        self.cap = cv2.VideoCapture(video_path)
-        if not self.cap.isOpened():
-            self.preview_label.config(text="无法打开视频文件")
-            return
+        try:
+            self.cap = cv2.VideoCapture(video_path)
+            if not self.cap.isOpened():
+                self.preview_label.config(text="无法打开视频文件")
+                return
 
-        fps = self.cap.get(cv2.CAP_PROP_FPS)
-        total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        duration = total_frames / fps
+            fps = self.cap.get(cv2.CAP_PROP_FPS)
+            total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            duration = total_frames / fps
 
-        if duration <= 30:
-            self.start_frames = [0]
-        else:
-            self.start_frames = [int(i * total_frames / 5) for i in range(5)]
+            if duration <= 30:
+                self.start_frames = [0]
+            else:
+                self.start_frames = [int(i * total_frames / 5) for i in range(5)]
 
-        self.preview_duration = min(duration, 30)
-        self.frames_per_segment = int(fps * self.preview_duration / 5)
-        self.current_segment = 0
-        self.frame_count = 0
-        self.start_time = time.time()
-        self.transition_frames = int(fps * 0.5)  # 0.5秒的过渡时间
-        self.last_frame = None
+            self.preview_duration = min(duration, 30)
+            self.frames_per_segment = int(fps * self.preview_duration / 5)
+            self.current_segment = 0
+            self.frame_count = 0
+            self.start_time = time.time()
+            self.transition_frames = int(fps * 0.5)  # 0.5秒的过渡时间
+            self.last_frame = None
 
-        self.play_video_segment()
+            self.play_video_segment()
+        except Exception as e:
+            logging.error(f"Error in preview_video: {e}")
+            self.preview_label.config(text="视频预览出错")
 
     def play_video_segment(self):
+        if not self.video_playing or self.preview_cancel_event.is_set():
+            self.stop_video_playback()
+            return
+
         if self.current_segment >= len(self.start_frames):
-            self.cap.release()
+            self.stop_video_playback()
             self.preview_label.config(text="视频预览完成")
             return
 
@@ -1592,14 +1587,10 @@ class OptimizedFileRenamerUI:
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
             if self.last_frame is not None and self.frame_count < self.transition_frames:
-                # 执行淡入淡出过渡
                 alpha = self.frame_count / self.transition_frames
                 frame = cv2.addWeighted(self.last_frame, 1 - alpha, frame, alpha, 0)
 
-            # 将OpenCV的numpy数组转换为PIL图像
             image = Image.fromarray(frame)
-
-            # 使用display_image方法来显示视频帧
             self.display_image(image)
 
             elapsed_time = time.time() - self.start_time
@@ -1609,21 +1600,23 @@ class OptimizedFileRenamerUI:
             if self.frame_count >= self.frames_per_segment:
                 self.frame_count = 0
                 self.current_segment += 1
-                self.last_frame = frame  # 保存最后一帧用于下一个过渡
+                self.last_frame = frame
 
             if elapsed_time < self.preview_duration:
-                self.master.after(int(1000 / self.cap.get(cv2.CAP_PROP_FPS)), self.play_video_segment)
+                # 使用实际的帧间隔时间来调度下一帧
+                frame_interval = 1000 / self.cap.get(cv2.CAP_PROP_FPS)
+                self.master.after(int(frame_interval), self.play_video_segment)
             else:
-                self.cap.release()
+                self.stop_video_playback()
                 self.preview_label.config(text="视频预览完成")
         else:
             self.current_segment += 1
             self.frame_count = 0
             self.play_video_segment()
 
+
     def on_closing(self):
-        if hasattr(self, 'cap') and self.cap.isOpened():
-            self.cap.release()
+        self.stop_video_playback()
         self.is_shutting_down = True
         try:
             self.save_state()
@@ -1665,17 +1658,12 @@ if __name__ == "__main__":
         app = OptimizedFileRenamerUI(root)
         root.protocol("WM_DELETE_WINDOW", app.on_closing)
 
-
         def run_async_loop():
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             loop.run_forever()
 
-
-        # 在单独的线程中运行asyncio事件循环
         threading.Thread(target=run_async_loop, daemon=True).start()
-
-        # 在主线程中运行Tkinter主循环
         root.mainloop()
 
     except Exception as e:
