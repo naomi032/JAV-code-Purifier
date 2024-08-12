@@ -27,7 +27,99 @@ import numpy as np
 import time
 from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor
+import math
+import tkinter as tk
+import math
+import tkinter as tk
+import math
+import random
 
+
+class LoadingAnimation(tk.Toplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("Loading")
+        self.geometry("400x320")  # 稍微增加高度以容纳新文本
+        self.configure(bg='black')
+        self.attributes('-alpha', 0.9)
+        self.overrideredirect(True)
+        self.attributes('-topmost', True)
+
+        self.canvas = tk.Canvas(self, width=400, height=320, bg='black', highlightthickness=0)
+        self.canvas.pack(expand=True)
+
+        self.particles = []
+        self.create_particles()
+
+        self.text = "JAV code Purifier"
+        self.current_text = ""
+        self.text_id = self.canvas.create_text(200, 140, text="", fill="#00FFFF", font=("Arial", 24, "bold"))
+
+        # 添加 powered by 文本
+        self.credit_text = self.canvas.create_text(200, 300, text="powered by naomi032",
+                                                   fill="#80FFFF", font=("Arial", 10))
+
+        self.animate()
+        self.animate_text()
+
+    def create_particles(self):
+        for _ in range(50):
+            x = random.randint(0, 400)
+            y = random.randint(0, 300)
+            size = random.randint(1, 3)
+            particle = self.canvas.create_oval(x, y, x + size, y + size, fill='#00FFFF', outline='')
+            speed = random.uniform(0.5, 2)
+            self.particles.append((particle, x, y, speed))
+
+    def animate(self):
+        for i, (particle, x, y, speed) in enumerate(self.particles):
+            y = (y + speed) % 300
+            self.canvas.moveto(particle, x, y)
+            self.particles[i] = (particle, x, y, speed)
+
+            if random.random() < 0.1:
+                opacity = random.randint(50, 255)
+                color = '#{:02x}{:02x}{:02x}'.format(0, opacity, opacity)
+                self.canvas.itemconfig(particle, fill=color)
+
+        self.after(30, self.animate)
+
+    def animate_text(self):
+        if len(self.current_text) < len(self.text):
+            self.current_text += self.text[len(self.current_text)]
+            self.canvas.itemconfig(self.text_id, text=self.current_text)
+            glow_effect = self.canvas.create_text(200, 140, text=self.current_text, fill="#80FFFF",
+                                                  font=("Arial", 24, "bold"))
+            self.after(50, lambda: self.canvas.delete(glow_effect))
+            self.after(100, self.animate_text)
+        else:
+            self.pulse_text()
+
+    def pulse_text(self):
+        current_color = self.canvas.itemcget(self.text_id, "fill")
+        if current_color == "#00FFFF":
+            new_color = "#80FFFF"
+        else:
+            new_color = "#00FFFF"
+        self.canvas.itemconfig(self.text_id, fill=new_color)
+        self.after(500, self.pulse_text)
+
+
+class OptimizedFileRenamerUI:
+    def __init__(self, master):
+        self.master = master
+        self.master.withdraw()
+        self.show_loading_animation()
+        self.master.after(5000, self.setup_main_ui)  # 5秒后设置主UI
+
+    def show_loading_animation(self):
+        self.loading_window = LoadingAnimation(self.master)
+        self.loading_window.update_idletasks()
+        width = self.loading_window.winfo_width()
+        height = self.loading_window.winfo_height()
+        x = (self.loading_window.winfo_screenwidth() // 2) - (width // 2)
+        y = (self.loading_window.winfo_screenheight() // 2) - (height // 2)
+        self.loading_window.geometry('{}x{}+{}+{}'.format(width, height, x, y))
 
 
 # 常量定义
@@ -117,6 +209,26 @@ def save_state_to_file(state):
 class OptimizedFileRenamerUI:
     def __init__(self, master):
         self.master = master
+        self.master.withdraw()
+        self.show_loading_animation()
+        self.master.after(3000, self.setup_main_ui)
+
+    def show_loading_animation(self):
+        self.loading_window = LoadingAnimation(self.master)
+        self.loading_window.update_idletasks()
+        width = self.loading_window.winfo_width()
+        height = self.loading_window.winfo_height()
+        x = (self.loading_window.winfo_screenwidth() // 2) - (width // 2)
+        y = (self.loading_window.winfo_screenheight() // 2) - (height // 2)
+        self.loading_window.geometry('{}x{}+{}+{}'.format(width, height, x, y))
+
+    def hide_loading_animation(self):
+        if hasattr(self, 'loading_window'):
+            self.loading_window.destroy()
+        self.master.deiconify()
+
+    def setup_main_ui(self):
+        self.hide_loading_animation()
         self.master.title('JAV-code-Purifier')
         self.master.geometry('1300x1000')
         self.master.configure(bg='#1e1e1e')  # 设置初始背景色
@@ -177,7 +289,7 @@ class OptimizedFileRenamerUI:
     def on_window_configure(self, event):
         if event.widget == self.master:
             current_time = time.time()
-            if current_time - self.last_resize_time > 0.5:
+            if current_time - self.last_resize_time > 0.2:  # 减少延迟以提高响应性
                 self.last_resize_time = current_time
                 self.master.after(100, self.update_layout)
 
@@ -376,15 +488,13 @@ class OptimizedFileRenamerUI:
 
         # 创建一个Frame在Canvas内
         self.content_frame = ttk.Frame(canvas)
-        canvas.create_window((0, 0), window=self.content_frame, anchor="nw")
+        canvas_window = canvas.create_window((0, 0), window=self.content_frame, anchor="nw")
 
         # 绑定配置事件以调整滚动区域大小
-        self.content_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(
-                scrollregion=canvas.bbox("all")
-            )
-        )
+        self.content_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+
+        # 使content_frame随Canvas调整大小
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(canvas_window, width=e.width))
 
         # 在content_frame内添加所有的UI组件
         left_frame = ttk.Frame(self.content_frame)
@@ -402,6 +512,15 @@ class OptimizedFileRenamerUI:
 
         self.create_buttons_frame(left_frame)
         self.create_statusbar()
+
+        # 确保主窗口可以调整大小
+        self.master.resizable(True, True)
+
+        # 设置最小窗口大小
+        self.master.minsize(600, 400)
+
+        # 绑定窗口大小变化事件
+        self.master.bind("<Configure>", self.on_window_configure)
 
     def copy_name(self, name_type):
         selected_items = self.tree.selection()
@@ -921,9 +1040,17 @@ class OptimizedFileRenamerUI:
             ("保留 xxx-yyy 格式", self.retain_format_var)
         ]
 
-        for text, var in options:
-            cb = ttk.Checkbutton(options_frame, text=text, variable=var, style='Custom.TCheckbutton')
-            cb.pack(anchor=tk.W, padx=5, pady=2)
+        options_container = ttk.Frame(options_frame)
+        options_container.pack(fill=tk.X, padx=5, pady=5)
+
+        for i, (text, var) in enumerate(options):
+            cb = ttk.Checkbutton(options_container, text=text, variable=var, style='Custom.TCheckbutton')
+            cb.grid(row=i // 3, column=i % 3, sticky=tk.W, padx=5, pady=2)
+
+        # 确保列能够均匀分布
+        options_container.grid_columnconfigure(0, weight=1)
+        options_container.grid_columnconfigure(1, weight=1)
+        options_container.grid_columnconfigure(2, weight=1)
 
     def refresh_treeview(self):
         if self.tree is None or not self.all_items:
@@ -1825,19 +1952,7 @@ class OptimizedFileRenamerUI:
 
 
 if __name__ == "__main__":
-    try:
-        root = ThemedTk(theme="clam")
-        app = OptimizedFileRenamerUI(root)
-        root.protocol("WM_DELETE_WINDOW", app.on_closing)
-
-        def run_async_loop():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_forever()
-
-        threading.Thread(target=run_async_loop, daemon=True).start()
-        root.mainloop()
-
-    except Exception as e:
-        logging.error(f"Unhandled exception: {e}")
-        messagebox.showerror("错误", f"程序遇到了一个未处理的错误：{e}")
+    from ttkthemes import ThemedTk
+    root = ThemedTk(theme="clam")
+    app = OptimizedFileRenamerUI(root)
+    root.mainloop()
