@@ -359,10 +359,35 @@ class OptimizedFileRenamerUI:
         pass
 
     def setup_ui(self):
-        main_frame = ttk.Frame(self.master)
-        main_frame.pack(fill=tk.BOTH, expand=True)
+        # 创建一个容器框架，将所有内容放在这个框架内
+        container = ttk.Frame(self.master)
+        container.pack(fill=tk.BOTH, expand=True)
 
-        left_frame = ttk.Frame(main_frame)
+        # 创建一个Canvas
+        canvas = tk.Canvas(container)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # 创建一个滚动条，并将其绑定到Canvas
+        scrollbar = ttk.Scrollbar(container, orient=tk.VERTICAL, command=canvas.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # 将Canvas与滚动条连接
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        # 创建一个Frame在Canvas内
+        self.content_frame = ttk.Frame(canvas)
+        canvas.create_window((0, 0), window=self.content_frame, anchor="nw")
+
+        # 绑定配置事件以调整滚动区域大小
+        self.content_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(
+                scrollregion=canvas.bbox("all")
+            )
+        )
+
+        # 在content_frame内添加所有的UI组件
+        left_frame = ttk.Frame(self.content_frame)
         left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         self.create_folder_frame(left_frame)
@@ -372,7 +397,7 @@ class OptimizedFileRenamerUI:
         bottom_frame = ttk.Frame(left_frame)
         bottom_frame.pack(fill=tk.BOTH, expand=True)
 
-        self.create_custom_rule_frame(bottom_frame)  # 确保这行存在
+        self.create_custom_rule_frame(bottom_frame)
         self.create_preview_frame(bottom_frame)
 
         self.create_buttons_frame(left_frame)
