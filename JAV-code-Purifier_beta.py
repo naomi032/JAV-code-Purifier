@@ -5,15 +5,17 @@ import json
 import pyperclip
 import configparser
 import webbrowser
-import tkinter as tk
 from tkinter import filedialog, simpledialog, messagebox, ttk
-from PIL import Image, ImageTk
+from PIL import Image, ImageTk, ImageDraw
 import subprocess
 import shutil
 import winreg
 import logging
 from ttkthemes import ThemedTk
+from tkinter import ttk
+import tkinter as tk
 from datetime import datetime
+from tkinter import ttk, font as tkfont
 import threading
 import multiprocessing
 import concurrent.futures
@@ -33,13 +35,14 @@ import math
 import tkinter as tk
 import math
 import random
-
+from tkinter import font as tkfont
+import tkinter.font as tkfont
 
 class LoadingAnimation(tk.Toplevel):
     def __init__(self, parent):
         super().__init__(parent)
         self.title("Loading")
-        self.geometry("400x320")  # 稍微增加高度以容纳新文本
+        self.geometry("400x320")
         self.configure(bg='black')
         self.attributes('-alpha', 0.9)
         self.overrideredirect(True)
@@ -105,21 +108,126 @@ class LoadingAnimation(tk.Toplevel):
         self.after(500, self.pulse_text)
 
 
-class OptimizedFileRenamerUI:
-    def __init__(self, master):
-        self.master = master
-        self.master.withdraw()
-        self.show_loading_animation()
-        self.master.after(5000, self.setup_main_ui)  # 5秒后设置主UI
+class DarkElvenTheme:
+    def __init__(self, root):
+        self.root = root
+        self.style = ttk.Style()
 
-    def show_loading_animation(self):
-        self.loading_window = LoadingAnimation(self.master)
-        self.loading_window.update_idletasks()
-        width = self.loading_window.winfo_width()
-        height = self.loading_window.winfo_height()
-        x = (self.loading_window.winfo_screenwidth() // 2) - (width // 2)
-        y = (self.loading_window.winfo_screenheight() // 2) - (height // 2)
-        self.loading_window.geometry('{}x{}+{}+{}'.format(width, height, x, y))
+        # 定义暗黑精灵风格的颜色方案
+        self.colors = {
+            'bg_dark': (26, 26, 46),  # 深邃的夜空蓝
+            'bg_medium': (22, 33, 62),  # 稍微亮一点的深蓝
+            'bg_light': (15, 52, 96),  # 深蓝色调的高光
+            'accent': (233, 69, 96),  # 神秘的红色作为强调色
+            'text': (212, 236, 221),  # 柔和的浅绿色文字
+            'button': (74, 14, 78),  # 深紫色按钮
+            'button_hover': (123, 51, 125),  # 亮紫色按钮悬停效果
+            'entry': (31, 31, 31),  # 几乎纯黑的输入框背景
+            'treeview_bg': (22, 33, 62),  # 树状视图背景
+            'treeview_fg': (212, 236, 221),  # 树状视图文字颜色
+            'treeview_selected': (83, 52, 131)  # 树状视图选中项颜色
+        }
+
+        self.apply_theme()
+
+    def apply_theme(self):
+        self.root.configure(bg=self.rgb_to_hex(self.colors['bg_dark']))
+
+        # 配置通用样式
+        self.style.configure('TFrame', background=self.rgb_to_hex(self.colors['bg_dark']))
+        self.style.configure('TLabel', background=self.rgb_to_hex(self.colors['bg_dark']),
+                             foreground=self.rgb_to_hex(self.colors['text']))
+        self.style.configure('TEntry', fieldbackground=self.rgb_to_hex(self.colors['entry']),
+                             foreground=self.rgb_to_hex(self.colors['text']))
+
+        # 配置树状视图
+        self.style.configure('Treeview',
+                             background=self.rgb_to_hex(self.colors['treeview_bg']),
+                             foreground=self.rgb_to_hex(self.colors['treeview_fg']),
+                             fieldbackground=self.rgb_to_hex(self.colors['treeview_bg']))
+        self.style.map('Treeview', background=[('selected', self.rgb_to_hex(self.colors['treeview_selected']))])
+
+        # 配置其他控件
+        self.style.configure('TCheckbutton', background=self.rgb_to_hex(self.colors['bg_dark']),
+                             foreground=self.rgb_to_hex(self.colors['text']))
+        self.style.configure('TRadiobutton', background=self.rgb_to_hex(self.colors['bg_dark']),
+                             foreground=self.rgb_to_hex(self.colors['text']))
+
+    @staticmethod
+    def rgb_to_hex(rgb):
+        return '#{:02x}{:02x}{:02x}'.format(rgb[0], rgb[1], rgb[2])
+
+
+class ElvenButton(tk.Canvas):
+    def __init__(self, master, text, command=None, width=160, height=40, corner_radius=20,
+                 bg_color="#4a0e4e", hover_color="#7b337d", text_color="#e0d0ff", **kwargs):
+        super().__init__(master, width=width, height=height, highlightthickness=0,
+                         bg=ttk.Style().lookup('TFrame', 'background'), **kwargs)
+        self.command = command
+        self.width = width
+        self.height = height
+        self.corner_radius = corner_radius
+
+        self.bg_color = bg_color
+        self.hover_color = hover_color
+        self.text_color = text_color
+
+        # 创建主要形状
+        self.shape = self.create_rounded_rect(0, 0, width, height, corner_radius, fill=self.bg_color, outline="")
+
+        # 创建微妙的光泽效果
+        self.highlight = self.create_rounded_rect(1, 1, width - 1, height - 1, corner_radius - 1,
+                                                  fill="", outline="#ffffff", width=1, stipple="gray50")
+
+        self.font = tkfont.Font(family="Palatino Linotype", size=12, weight="bold")
+        self.text_item = self.create_text(width // 2, height // 2, text=text, fill=self.text_color, font=self.font)
+
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+        self.bind("<ButtonPress-1>", self._on_press)
+        self.bind("<ButtonRelease-1>", self._on_release)
+
+    def create_rounded_rect(self, x1, y1, x2, y2, radius, **kwargs):
+        points = [
+            x1 + radius, y1,
+            x2 - radius, y1,
+            x2, y1,
+            x2, y1 + radius,
+            x2, y2 - radius,
+            x2, y2,
+            x2 - radius, y2,
+            x1 + radius, y2,
+            x1, y2,
+            x1, y2 - radius,
+            x1, y1 + radius,
+            x1, y1
+        ]
+        return self.create_polygon(points, **kwargs, smooth=True)
+
+    def _on_enter(self, event):
+        self.itemconfig(self.shape, fill=self.hover_color)
+        self.itemconfig(self.highlight, stipple="gray75")
+
+    def _on_leave(self, event):
+        self.itemconfig(self.shape, fill=self.bg_color)
+        self.itemconfig(self.highlight, stipple="gray50")
+
+    def _on_press(self, event):
+        self.itemconfig(self.text_item, fill="#ffd700")  # 金色
+        self.itemconfig(self.highlight, stipple="gray25")
+
+    def _on_release(self, event):
+        self.itemconfig(self.text_item, fill=self.text_color)
+        self.itemconfig(self.highlight, stipple="gray50")
+        if self.command:
+            self.command()
+
+    def update_text(self, new_text):
+        self.itemconfig(self.text_item, text=new_text)
+
+    def config(self, **kwargs):
+        if 'text' in kwargs:
+            self.update_text(kwargs['text'])
 
 
 # 常量定义
@@ -1104,11 +1212,10 @@ class OptimizedFileRenamerUI:
         ]
 
         for i, (text, command) in enumerate(buttons):
-            button = ttk.Button(buttons_frame, text=text, command=command)
-            button.grid(row=0, column=i, padx=5, pady=5)
+            button = ElvenButton(buttons_frame, text=text, command=command, width=160, height=40, corner_radius=20)
+            button.grid(row=0, column=i, padx=4, pady=5)  # 稍微减少了水平间距
             if text == "开始重命名":
                 self.start_button = button
-                self.start_button.state(['disabled'])
 
         buttons_frame.grid_columnconfigure(tuple(range(len(buttons))), weight=1)
 
@@ -1952,7 +2059,7 @@ class OptimizedFileRenamerUI:
 
 
 if __name__ == "__main__":
-    from ttkthemes import ThemedTk
-    root = ThemedTk(theme="clam")
+    root = tk.Tk()
+    root.dark_elven_theme = DarkElvenTheme(root)  # 创建主题实例并存储在 root 上
     app = OptimizedFileRenamerUI(root)
     root.mainloop()
