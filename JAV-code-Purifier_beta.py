@@ -5,19 +5,14 @@ import json
 import pyperclip
 import configparser
 import webbrowser
-from tkinter import filedialog, simpledialog, messagebox, ttk
-from PIL import Image, ImageTk, ImageDraw
+from tkinter import filedialog, simpledialog, messagebox, ttk, font as tkfont
+from PIL import Image, ImageTk
 import subprocess
 import shutil
 import winreg
 import logging
-from ttkthemes import ThemedTk
-from tkinter import ttk
-import tkinter as tk
 from datetime import datetime
-from tkinter import ttk, font as tkfont
 import threading
-import multiprocessing
 import concurrent.futures
 import atexit
 import asyncio
@@ -25,18 +20,25 @@ import io
 import base64
 import warnings
 import cv2
-import numpy as np
 import time
 from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor
-import math
 import tkinter as tk
-import math
-import tkinter as tk
-import math
 import random
-from tkinter import font as tkfont
-import tkinter.font as tkfont
+import psutil
+
+
+# 常量定义
+CONFIG_FILE = 'config.ini'
+HISTORY_FILE = 'history.json'
+STATE_FILE = 'state.json'
+CUSTOM_RULES_FILE = 'custom_rules.json'
+logging.basicConfig(filename='renamer.log', level=logging.DEBUG)
+warnings.filterwarnings("ignore", category=UserWarning)
+sys.setrecursionlimit(5000)  # 增加递归限制，默认是100
+VERSION = "v1.6.0"
+
+
 
 class LoadingAnimation(tk.Toplevel):
     def __init__(self, parent):
@@ -58,12 +60,22 @@ class LoadingAnimation(tk.Toplevel):
         self.current_text = ""
         self.text_id = self.canvas.create_text(200, 140, text="", fill="#00FFFF", font=("Arial", 24, "bold"))
 
+        # 添加版本号
+        self.version_text = self.canvas.create_text(200, 180, text=VERSION, fill="#80FFFF", font=("Arial", 16))
+
+        # 添加当前任务显示
+        self.task_text = self.canvas.create_text(200, 220, text="", fill="#80FFFF", font=("Arial", 12))
+
         # 添加 powered by 文本
         self.credit_text = self.canvas.create_text(200, 300, text="powered by naomi032",
                                                    fill="#80FFFF", font=("Arial", 10))
 
         self.animate()
         self.animate_text()
+
+    def set_task(self, task):
+        self.canvas.itemconfig(self.task_text, text=f"当前任务: {task}")
+
 
     def create_particles(self):
         for _ in range(50):
@@ -229,16 +241,6 @@ class ElvenButton(tk.Canvas):
         if 'text' in kwargs:
             self.update_text(kwargs['text'])
 
-
-# 常量定义
-CONFIG_FILE = 'config.ini'
-HISTORY_FILE = 'history.json'
-STATE_FILE = 'state.json'
-CUSTOM_RULES_FILE = 'custom_rules.json'
-logging.basicConfig(filename='renamer.log', level=logging.DEBUG)
-warnings.filterwarnings("ignore", category=UserWarning)
-sys.setrecursionlimit(5000)  # 增加递归限制，默认是100
-
 def create_icon(png_path, icon_sizes=[(16, 16), (32, 32), (48, 48), (64, 64)]):
     with Image.open(png_path) as img:
         icon_images = []
@@ -313,30 +315,83 @@ def save_state_to_file(state):
     with open(STATE_FILE, 'w') as file:
         json.dump(state, file, indent=4)
 
+def safe_rename(src, dst, max_attempts=3, delay=1):
+    for attempt in range(max_attempts):
+        try:
+            os.rename(src, dst)
+            return True
+        except PermissionError as e:
+            if attempt == max_attempts - 1:
+                using_processes = find_processes_using_file(src)
+                error_message = f"文件 '{os.path.basename(src)}' 被以下进程占用:\n"
+                for proc in using_processes:
+                    error_message += f"- {proc.name()} (PID: {proc.pid})\n"
+                error_message += "\n是否重试重命名?"
+                if messagebox.askyesno("文件被占用", error_message):
+                    return safe_rename(src, dst, max_attempts, delay * 2)
+                else:
+                    return False
+            time.sleep(delay)
+    return False
+
+def find_processes_using_file(filepath):
+    using_processes = []
+    for proc in psutil.process_iter(['name', 'open_files']):
+        try:
+            for file in proc.open_files():
+                if file.path == filepath:
+                    using_processes.append(proc)
+                    break
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            pass
+    return using_processes
+
 
 class OptimizedFileRenamerUI:
     def __init__(self, master):
         self.master = master
         self.master.withdraw()
-        self.show_loading_animation()
-        self.master.after(3000, self.setup_main_ui)
+        self.loading_animation = self.show_loading_animation()
+        self.loading_animation.set_task("初始化程序...")
+        self.master.after(100, self.delayed_initialization)
+
+    def delayed_initialization(self):
+        try:
+            logging.debug("开始延迟初始化")
+            self.loading_animation.set_task("创建用户界面...")
+            self.setup_main_ui()
+            self.loading_animation.set_task("加载状态...")
+            self.load_state()
+            self.loading_animation.set_task("完成初始化...")
+            self.master.after(3000, self.finish_initialization)
+        except Exception as e:
+            logging.error(f"初始化过程中出错: {e}")
+            messagebox.showerror("初始化错误", f"程序初始化过程中发生错误：{e}")
+            self.master.quit()
 
     def show_loading_animation(self):
-        self.loading_window = LoadingAnimation(self.master)
-        self.loading_window.update_idletasks()
-        width = self.loading_window.winfo_width()
-        height = self.loading_window.winfo_height()
-        x = (self.loading_window.winfo_screenwidth() // 2) - (width // 2)
-        y = (self.loading_window.winfo_screenheight() // 2) - (height // 2)
-        self.loading_window.geometry('{}x{}+{}+{}'.format(width, height, x, y))
+        loading_animation = LoadingAnimation(self.master)
+        loading_animation.update_idletasks()
+        width = loading_animation.winfo_width()
+        height = loading_animation.winfo_height()
+        x = (loading_animation.winfo_screenwidth() // 2) - (width // 2)
+        y = (loading_animation.winfo_screenheight() // 2) - (height // 2)
+        loading_animation.geometry('{}x{}+{}+{}'.format(width, height, x, y))
+        return loading_animation
+
+    def finish_initialization(self):
+        logging.debug("完成初始化")
+        self.hide_loading_animation()
+        self.master.deiconify()
+        self.master.after(100, self.prompt_restore_last_folder)
 
     def hide_loading_animation(self):
-        if hasattr(self, 'loading_window'):
-            self.loading_window.destroy()
+        if hasattr(self, 'loading_animation'):
+            self.loading_animation.destroy()
         self.master.deiconify()
 
     def setup_main_ui(self):
-        self.hide_loading_animation()
+        logging.debug("设置主UI")
         self.master.title('JAV-code-Purifier')
         self.master.geometry('1300x1000')
         self.master.configure(bg='#1e1e1e')  # 设置初始背景色
@@ -393,6 +448,58 @@ class OptimizedFileRenamerUI:
 
         self.last_resize_time = 0
         self.master.bind("<Configure>", self.on_window_configure)
+
+    def prompt_restore_last_folder(self):
+        logging.debug("提示恢复上次文件夹")
+        last_path = load_last_path()
+        if last_path and os.path.exists(last_path):
+            prompt_window = tk.Toplevel(self.master)
+            prompt_window.title("恢复上次文件夹")
+            prompt_window.geometry("400x150")
+            prompt_window.transient(self.master)
+            prompt_window.grab_set()
+            prompt_window.focus_set()
+
+            message = f"是否要恢复上次选择的文件夹?\n{last_path}"
+            tk.Label(prompt_window, text=message, wraplength=380).pack(pady=10)
+
+            def on_yes():
+                self.selected_folder = last_path
+                self.folder_label.config(text=f'选择文件夹: {self.selected_folder}')
+                self.preview_files()
+                self.start_button.config(state="normal")
+                prompt_window.destroy()
+
+            def on_no():
+                prompt_window.destroy()
+                self.select_new_folder()
+
+            tk.Button(prompt_window, text="是", command=on_yes).pack(side=tk.LEFT, expand=True, pady=10)
+            tk.Button(prompt_window, text="否", command=on_no).pack(side=tk.RIGHT, expand=True, pady=10)
+
+            prompt_window.update_idletasks()
+            width = prompt_window.winfo_width()
+            height = prompt_window.winfo_height()
+            x = (prompt_window.winfo_screenwidth() // 2) - (width // 2)
+            y = (prompt_window.winfo_screenheight() // 2) - (height // 2)
+            prompt_window.geometry('{}x{}+{}+{}'.format(width, height, x, y))
+        else:
+            self.select_new_folder()
+
+    def select_new_folder(self):
+        logging.debug("选择新文件夹")
+        self.selected_folder = filedialog.askdirectory()
+        if self.selected_folder:
+            self.folder_label.config(text=f"选择文件夹: {self.selected_folder}")
+            self.preview_files()
+            self.start_button.config(state="normal")
+            save_last_path(self.selected_folder)
+        else:
+            logging.debug("没有选择文件夹")
+            self.folder_label.config(text="未选择文件夹")
+            self.start_button.config(state="disabled")
+
+
 
     def on_window_configure(self, event):
         if event.widget == self.master:
@@ -630,6 +737,15 @@ class OptimizedFileRenamerUI:
         # 绑定窗口大小变化事件
         self.master.bind("<Configure>", self.on_window_configure)
 
+    def load_rename_history(self):
+        if os.path.exists(HISTORY_FILE):
+            with open(HISTORY_FILE, 'r') as f:
+                self.rename_history = json.load(f)
+
+    def save_rename_history(self):
+        with open(HISTORY_FILE, 'w') as f:
+            json.dump(self.rename_history, f)
+
     def copy_name(self, name_type):
         selected_items = self.tree.selection()
         if not selected_items:
@@ -662,11 +778,11 @@ class OptimizedFileRenamerUI:
 
         item = selected_items[0]
         values = self.tree.item(item, 'values')
-        if len(values) != 7:
+        if len(values) < 3:
             messagebox.showerror("错误", f"意外的数据结构: {values}")
             return
 
-        original_name, _, final_name, _, _, _, _ = values
+        original_name, _, final_name, *_ = values
 
         logic_explanation = self.explain_rename_logic(original_name, final_name)
 
@@ -1304,24 +1420,25 @@ class OptimizedFileRenamerUI:
         renamed_files = []
         for item in self.tree.get_children():
             values = self.tree.item(item, 'values')
-            original_name, preview_name, final_name, item_type, size, relative_path, status = values
+            original_name, preview_name, final_name, item_type, size, relative_path, status = values[:7]
 
             if status == '未修改' and item_type != '<DIR>':
                 original_path = os.path.join(self.selected_folder, relative_path, original_name)
-                new_name = self.process_filename(original_name)
-                new_path = os.path.join(self.selected_folder, relative_path, new_name)
+                new_path = os.path.join(self.selected_folder, relative_path, final_name)
 
                 if not os.path.exists(original_path):
                     self.tree.set(item, column='状态', value='错误: 文件不存在')
                     continue
 
-                if original_name != new_name:
+                if original_name != final_name:
                     try:
-                        os.rename(original_path, new_path)
-                        self.tree.set(item, column='状态', value='已重命名')
-                        renamed_files.append([original_path, new_path])
-                        self.add_rename_history(original_path, new_path)
-                        logging.info(f"Renamed file: {original_path} to {new_path}")
+                        if safe_rename(original_path, new_path):
+                            self.tree.set(item, column='状态', value='已重命名')
+                            renamed_files.append([original_path, new_path])
+                            self.add_rename_history(original_path, new_path)
+                            logging.info(f"Renamed file: {original_path} to {new_path}")
+                        else:
+                            self.tree.set(item, column='状态', value='重命名失败: 文件被占用')
                     except Exception as e:
                         error_msg = f'错误: {str(e)}'
                         self.tree.set(item, column='状态', value=error_msg)
@@ -1671,7 +1788,7 @@ class OptimizedFileRenamerUI:
                 messagebox.showerror("错误", f"意外的数据结构: {values}")
                 continue
 
-            original_name, preview_name, final_name, item_type, size, relative_path, status = values[:7]
+            original_name, preview_name, final_name, item_type, size, relative_path, status, *_ = values
 
             if status == '未修改':
                 try:
@@ -1697,6 +1814,7 @@ class OptimizedFileRenamerUI:
                     logging.error(f"Error renaming {original_path}: {str(e)}")
 
         self.refresh_preview()
+        self.save_rename_history()
 
     def add_rename_history(self, original_path, new_path):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1795,11 +1913,11 @@ class OptimizedFileRenamerUI:
 
         item = selected_items[0]
         values = self.tree.item(item, 'values')
-        if len(values) < 7:
+        if len(values) < 6:
             messagebox.showerror("错误", f"意外的数据结构: {values}")
             return
 
-        original_name, _, _, _, _, relative_path = values[:6]
+        original_name, _, _, _, _, relative_path, *_ = values
         file_path = os.path.join(self.selected_folder, relative_path, original_name)
 
         if file_path in self.rename_history:
@@ -1842,7 +1960,7 @@ class OptimizedFileRenamerUI:
 
 
     def show_about(self):
-        about_text = "文件重命名工具\n版本 1.0\n\n作者：naomi032\n\n该工具用于批量重命名文件，支持多种重命名选项。"
+        about_text = "文件重命名工具\n版本 1.6\n\n作者：naomi032\n\n该工具用于批量重命名文件，支持多种重命名选项。"
         messagebox.showinfo("关于", about_text)
 
     def open_help(self):
@@ -2026,8 +2144,9 @@ class OptimizedFileRenamerUI:
         self.is_shutting_down = True
         try:
             self.save_state()
+            self.save_rename_history()
         except Exception as e:
-            logging.error(f"Error saving state: {e}")
+            logging.error(f"Error saving state or history: {e}")
         finally:
             self.executor.shutdown(wait=True)
             self.master.quit()
