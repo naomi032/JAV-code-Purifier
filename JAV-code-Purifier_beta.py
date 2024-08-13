@@ -18,6 +18,7 @@ import atexit
 import asyncio
 import io
 import base64
+import queue
 import warnings
 import cv2
 import time
@@ -26,17 +27,23 @@ from concurrent.futures import ThreadPoolExecutor
 import tkinter as tk
 import random
 import psutil
-
+import win32security
+import win32file
+import win32api
+import win32con
+import pywintypes
 
 # 常量定义
 CONFIG_FILE = 'config.ini'
 HISTORY_FILE = 'history.json'
 STATE_FILE = 'state.json'
 CUSTOM_RULES_FILE = 'custom_rules.json'
+VERSION = "v1.6.0"
+
+# 配置日志和警告
 logging.basicConfig(filename='renamer.log', level=logging.DEBUG)
 warnings.filterwarnings("ignore", category=UserWarning)
 sys.setrecursionlimit(5000)  # 增加递归限制，默认是100
-VERSION = "v1.6.0"
 
 
 
@@ -199,6 +206,12 @@ class ElvenButton(tk.Canvas):
         self.bind("<ButtonPress-1>", self._on_press)
         self.bind("<ButtonRelease-1>", self._on_release)
 
+    def set_state(self, state):
+        if state == 'normal':
+            self.config(state=tk.NORMAL)
+        elif state == 'disabled':
+            self.config(state=tk.DISABLED)
+
     def create_rounded_rect(self, x1, y1, x2, y2, radius, **kwargs):
         points = [
             x1 + radius, y1,
@@ -283,26 +296,7 @@ def save_last_path(path):
     with open(CONFIG_FILE, 'w') as configfile:
         config.write(configfile)
 
-def load_history():
-    if os.path.exists(HISTORY_FILE):
-        try:
-            with open(HISTORY_FILE, 'r') as file:
-                history = json.load(file)
-                print("Loaded history:", history)  # 调试信息
-                return history
-        except json.JSONDecodeError as e:
-            print("Error decoding JSON:", e)  # 打印错误信息
-            return []
-    return []
 
-
-def save_history(history):
-    try:
-        with open(HISTORY_FILE, 'w') as file:
-            json.dump(history, file, indent=4)
-            print("Saved history:", history)  # 调试信息
-    except Exception as e:
-        print("Error saving history:", e)  # 打印错误信息
 
 
 def load_state_from_file():
@@ -315,37 +309,6 @@ def save_state_to_file(state):
     with open(STATE_FILE, 'w') as file:
         json.dump(state, file, indent=4)
 
-def safe_rename(src, dst, max_attempts=3, delay=1):
-    for attempt in range(max_attempts):
-        try:
-            os.rename(src, dst)
-            return True
-        except PermissionError as e:
-            if attempt == max_attempts - 1:
-                using_processes = find_processes_using_file(src)
-                error_message = f"文件 '{os.path.basename(src)}' 被以下进程占用:\n"
-                for proc in using_processes:
-                    error_message += f"- {proc.name()} (PID: {proc.pid})\n"
-                error_message += "\n是否重试重命名?"
-                if messagebox.askyesno("文件被占用", error_message):
-                    return safe_rename(src, dst, max_attempts, delay * 2)
-                else:
-                    return False
-            time.sleep(delay)
-    return False
-
-def find_processes_using_file(filepath):
-    using_processes = []
-    for proc in psutil.process_iter(['name', 'open_files']):
-        try:
-            for file in proc.open_files():
-                if file.path == filepath:
-                    using_processes.append(proc)
-                    break
-        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-            pass
-    return using_processes
-
 
 class OptimizedFileRenamerUI:
     def __init__(self, master):
@@ -354,6 +317,11 @@ class OptimizedFileRenamerUI:
         self.loading_animation = self.show_loading_animation()
         self.loading_animation.set_task("初始化程序...")
         self.master.after(100, self.delayed_initialization)
+        self.rename_history = {}
+        self.rename_history = self.load_history()
+        self.create_menu()
+        self.preview_cancel_event = threading.Event()
+
 
     def delayed_initialization(self):
         try:
@@ -737,6 +705,71 @@ class OptimizedFileRenamerUI:
         # 绑定窗口大小变化事件
         self.master.bind("<Configure>", self.on_window_configure)
 
+    def add_rename_history(self, original_path, new_path):
+        if original_path != new_path:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            if original_path not in self.rename_history:
+                self.rename_history[original_path] = []
+            self.rename_history[original_path].append((timestamp, new_path))
+            self.save_history()  # 立即保存历史记录
+            return True
+        return False
+
+    def load_history(self):
+        if os.path.exists(HISTORY_FILE):
+            try:
+                with open(HISTORY_FILE, 'r', encoding='utf-8') as file:
+                    return json.load(file)
+            except json.JSONDecodeError:
+                logging.error(f"Error decoding JSON from {HISTORY_FILE}")
+            except Exception as e:
+                logging.error(f"Unexpected error loading history from {HISTORY_FILE}: {e}")
+        return {}
+
+    def save_history(self):
+        try:
+            with open(HISTORY_FILE, 'w', encoding='utf-8') as file:
+                json.dump(self.rename_history, file, ensure_ascii=False, indent=4)
+        except Exception as e:
+            logging.error(f"Error saving history to {HISTORY_FILE}: {e}")
+
+
+
+    def safe_rename(self, src, dst, max_attempts=3, delay=1):
+        for attempt in range(max_attempts):
+            try:
+                if not os.path.exists(src):
+                    raise FileNotFoundError(f"源文件不存在: {src}")
+
+                # 确保目标文件夹存在
+                dst_dir = os.path.dirname(dst)
+                if not os.path.exists(dst_dir):
+                    os.makedirs(dst_dir)
+
+                os.rename(src, dst)
+                return True
+            except PermissionError as e:
+                if attempt == max_attempts - 1:
+                    using_processes = self.find_processes_using_file(src)
+                    error_message = f"文件 '{os.path.basename(src)}' 被以下进程占用:\n"
+                    for proc in using_processes:
+                        error_message += f"- {proc.name()} (PID: {proc.pid})\n"
+                    error_message += "\n是否重试重命名?"
+                    if messagebox.askyesno("文件被占用", error_message):
+                        return self.safe_rename(src, dst, max_attempts, delay * 2)
+                    else:
+                        return False
+                time.sleep(delay)
+            except FileNotFoundError as e:
+                messagebox.showerror("错误", str(e))
+                return False
+            except Exception as e:
+                messagebox.showerror("错误", f"重命名失败: {str(e)}")
+                return False
+        return False
+
+
+
     def load_rename_history(self):
         if os.path.exists(HISTORY_FILE):
             with open(HISTORY_FILE, 'r') as f:
@@ -865,21 +898,22 @@ class OptimizedFileRenamerUI:
         file_path = os.path.join(self.selected_folder, relative_path, original_name)
         self.open_file(file_path)
 
-    def open_file_location(self):
-        selected_items = self.tree.selection()
-        if not selected_items:
-            messagebox.showwarning("警告", "请选择一个文件或文件夹")
-            return
+    def open_file_location(self, folder_path=None):
+        if folder_path is None:
+            selected_items = self.tree.selection()
+            if not selected_items:
+                messagebox.showwarning("警告", "请选择一个文件或文件夹")
+                return
 
-        item = selected_items[0]
-        values = self.tree.item(item, 'values')
-        if len(values) < 7:
-            messagebox.showerror("错误", f"意外的数据结构: {values}")
-            return
+            item = selected_items[0]
+            values = self.tree.item(item, 'values')
+            if len(values) < 6:
+                messagebox.showerror("错误", f"意外的数据结构: {values}")
+                return
 
-        original_name, _, _, _, _, relative_path = values[:6]
-        file_path = os.path.join(self.selected_folder, relative_path, original_name)
-        folder_path = os.path.dirname(file_path)
+            original_name, *_, relative_path = values[:6]
+            file_path = os.path.join(self.selected_folder, relative_path, original_name)
+            folder_path = os.path.dirname(file_path)
 
         # Use a thread to open the file location
         threading.Thread(target=self._open_file_location_thread, args=(folder_path,)).start()
@@ -894,7 +928,6 @@ class OptimizedFileRenamerUI:
                 subprocess.Popen(['xdg-open', folder_path])
         except Exception as e:
             self.master.after(0, lambda: messagebox.showerror("错误", f"无法打开文件位置: {e}"))
-
     def create_custom_rule_frame(self, parent):
         self.custom_rule_frame = ttk.LabelFrame(parent, text="自定义规则")
         self.custom_rule_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=10)
@@ -1011,7 +1044,17 @@ class OptimizedFileRenamerUI:
         self.context_menu.add_command(label="打开文件", command=self.open_selected_file)
         self.context_menu.add_command(label="打开文件位置", command=self.open_file_location)
 
+    def show_context_menu(self, event):
+        item = self.tree.identify_row(event.y)
+        if item:
+            self.tree.selection_set(item)
+            self.context_menu.post(event.x_root, event.y_root)
+
     def manual_rename(self):
+        # 停止所有预览
+        self.stop_video_playback()
+        self.preview_cancel_event.set()
+
         selected_items = self.tree.selection()
         if not selected_items:
             messagebox.showwarning("警告", "请选择一个文件或文件夹")
@@ -1033,22 +1076,25 @@ class OptimizedFileRenamerUI:
         if new_name and new_name != original_name:
             try:
                 new_path = os.path.join(os.path.dirname(full_path), new_name)
-                os.rename(full_path, new_path)
 
-                # 更新treeview
-                new_values = list(values)
-                new_values[0] = new_name  # 更新原始文件名
-                new_values[1] = new_name  # 更新预览名称
-                new_values[2] = new_name  # 更新最终名称
-                new_values[6] = '已手动重命名'  # 更新状态
-                if cdx_info:
-                    new_values[8] = cdx_info  # 保留 CDX 信息
-                self.tree.item(item, values=tuple(new_values))
+                # 使用 self.safe_rename 进行重命名
+                if self.safe_rename(full_path, new_path):
+                    # 更新treeview
+                    new_values = list(values)
+                    new_values[0] = new_name  # 更新原始文件名
+                    new_values[1] = new_name  # 更新预览名称
+                    new_values[2] = new_name  # 更新最终名称
+                    new_values[6] = '已手动重命名'  # 更新状态
+                    if cdx_info:
+                        new_values[8] = cdx_info  # 保留 CDX 信息
+                    self.tree.item(item, values=tuple(new_values))
 
-                # 添加到重命名历史
-                self.add_rename_history(full_path, new_path)
+                    # 添加到重命名历史
+                    self.add_rename_history(full_path, new_path)
 
-                messagebox.showinfo("成功", f"文件已重命名为: {new_name}")
+                    messagebox.showinfo("成功", f"文件已重命名为: {new_name}")
+                else:
+                    messagebox.showerror("错误", "重命名失败，文件可能被占用")
             except Exception as e:
                 messagebox.showerror("错误", f"重命名失败: {str(e)}")
         elif new_name == original_name:
@@ -1068,9 +1114,11 @@ class OptimizedFileRenamerUI:
         file_menu.add_command(label="选择文件夹", command=self.select_folder)
         file_menu.add_command(label="退出", command=self.master.quit)
 
-        edit_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="编辑", menu=edit_menu)
+        self.menubar = menubar
+        edit_menu = tk.Menu(self.menubar, tearoff=0)
+        self.menubar.add_cascade(label="编辑", menu=edit_menu)
         edit_menu.add_command(label="撤销重命名", command=self.undo_rename)
+        edit_menu.add_command(label="清空重命名历史", command=self.clear_rename_history)
 
         view_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="查看", menu=view_menu)
@@ -1080,7 +1128,13 @@ class OptimizedFileRenamerUI:
         menubar.add_cascade(label="帮助", menu=help_menu)
         help_menu.add_command(label="关于", command=self.show_about)
 
-        self.menubar = menubar
+
+
+    def clear_rename_history(self):
+        if messagebox.askyesno("确认", "您确定要清空所有重命名历史记录吗？"):
+            self.rename_history.clear()
+            self.save_history()
+            messagebox.showinfo("完成", "重命名历史已清空")
 
 
     def create_folder_frame(self, parent):
@@ -1349,7 +1403,7 @@ class OptimizedFileRenamerUI:
         if self.selected_folder:
             self.folder_label.config(text=f"选择文件夹: {self.selected_folder}")
             self.preview_files()
-            self.start_button.state(['!disabled'])
+            self.start_button.set_state('normal')  # 使用新的 set_state 方法
             save_last_path(self.selected_folder)
 
     def preview_files(self):
@@ -1418,6 +1472,7 @@ class OptimizedFileRenamerUI:
 
     def rename_files(self):
         renamed_files = []
+        history = self.load_history()
         for item in self.tree.get_children():
             values = self.tree.item(item, 'values')
             original_name, preview_name, final_name, item_type, size, relative_path, status = values[:7]
@@ -1432,10 +1487,10 @@ class OptimizedFileRenamerUI:
 
                 if original_name != final_name:
                     try:
-                        if safe_rename(original_path, new_path):
+                        if self.safe_rename(original_path, new_path):
                             self.tree.set(item, column='状态', value='已重命名')
                             renamed_files.append([original_path, new_path])
-                            self.add_rename_history(original_path, new_path)
+                            history.append([original_path, new_path])  # 添加到历史记录
                             logging.info(f"Renamed file: {original_path} to {new_path}")
                         else:
                             self.tree.set(item, column='状态', value='重命名失败: 文件被占用')
@@ -1446,7 +1501,8 @@ class OptimizedFileRenamerUI:
                 else:
                     self.tree.set(item, column='状态', value='无需重命名')
 
-        return renamed_files
+                self.save_history(history)  # 保存更新后的历史记录
+                return renamed_files
 
     def delete_small_videos(self):
         if not self.selected_folder:
@@ -1707,6 +1763,10 @@ class OptimizedFileRenamerUI:
             messagebox.showwarning("警告", "请先选择一个文件夹")
             return
 
+        # 停止所有预览
+        self.stop_video_playback()
+        self.preview_cancel_event.set()
+
         mode = self.rename_mode.get()
         items_to_rename = [item for item in self.tree.get_children() if self.tree.item(item, 'values')[6] == '未修改']
 
@@ -1740,11 +1800,18 @@ class OptimizedFileRenamerUI:
 
         if messagebox.askyesno("确认重命名",
                                f"您确定要重命名选中的 {len(items_to_rename)} 个{'文件' if mode == 'files' else '文件夹'}吗？"):
-            self.perform_renaming(items_to_rename)
+            total, renamed_count, unchanged_count, error_count = self.perform_renaming(items_to_rename)
+            messagebox.showinfo("完成", f"重命名操作完成。\n"
+                                        f"共进行了 {total} 次重命名尝试，其中：\n"
+                                        f"{renamed_count} 个被成功修改，\n"
+                                        f"{unchanged_count} 个与原名称相同未重命名，\n"
+                                        f"{error_count} 个修改失败。")
+            self.refresh_preview()
 
     def perform_renaming(self, items_to_rename):
         total = len(items_to_rename)
         renamed_count = 0
+        unchanged_count = 0
         error_count = 0
 
         progress = ttk.Progressbar(self.master, length=300, mode='determinate')
@@ -1761,10 +1828,20 @@ class OptimizedFileRenamerUI:
             try:
                 original_path = os.path.join(self.selected_folder, relative_path, original_name)
                 new_path = os.path.join(self.selected_folder, relative_path, final_name)
-                os.rename(original_path, new_path)
-                self.tree.set(item, column='状态', value='已重命名')
-                self.add_rename_history(original_path, new_path)
-                renamed_count += 1
+
+                if original_path != new_path:
+                    if self.safe_rename(original_path, new_path):
+                        self.tree.set(item, column='状态', value='已重命名')
+                        if self.add_rename_history(original_path, new_path):
+                            renamed_count += 1
+                        else:
+                            unchanged_count += 1
+                    else:
+                        self.tree.set(item, column='状态', value='重命名失败')
+                        error_count += 1
+                else:
+                    self.tree.set(item, column='状态', value='无需重命名')
+                    unchanged_count += 1
             except Exception as e:
                 self.tree.set(item, column='状态', value=f'错误: {str(e)}')
                 error_count += 1
@@ -1773,54 +1850,84 @@ class OptimizedFileRenamerUI:
             self.master.update_idletasks()
 
         progress.destroy()
-        messagebox.showinfo("完成", f"重命名完成。\n成功: {renamed_count}\n失败: {error_count}")
-        self.refresh_preview()
+        return total, renamed_count, unchanged_count, error_count
 
     def rename_selected_file(self):
         selected_items = self.tree.selection()
         if not selected_items:
-            messagebox.showwarning("警告", "请选择一个文件或文件夹")
+            messagebox.showwarning("警告", "请选择一个或多个文件或文件夹")
             return
 
+        # 暂停预览
+        self.stop_video_playback()
+        self.preview_cancel_event.set()
+
+        rename_tasks = []
         for item in selected_items:
             values = self.tree.item(item, 'values')
             if len(values) < 7:
-                messagebox.showerror("错误", f"意外的数据结构: {values}")
                 continue
+            original_name, _, final_name, _, _, relative_path, _ = values[:7]
+            if original_name != final_name:
+                original_path = os.path.join(self.selected_folder, relative_path, original_name)
+                new_path = os.path.join(self.selected_folder, relative_path, final_name)
+                rename_tasks.append((item, original_path, new_path))
 
-            original_name, preview_name, final_name, item_type, size, relative_path, status, *_ = values
+        if not rename_tasks:
+            messagebox.showinfo("提示", "没有需要重命名的文件")
+            return
 
-            if status == '未修改':
-                try:
-                    original_path = os.path.join(self.selected_folder, relative_path, original_name)
-                    new_path = os.path.join(self.selected_folder, relative_path, final_name)
+        total = len(rename_tasks)
+        success_count = 0
+        error_count = 0
+        skipped_count = 0
 
-                    if not os.path.exists(original_path):
-                        self.tree.set(item, column='状态', value='错误: 原文件或文件夹不存在')
-                        continue
+        progress = ttk.Progressbar(self.master, length=300, mode='determinate', maximum=total)
+        progress.pack(pady=10)
 
-                    os.rename(original_path, new_path)
+        for i, (item, original_path, new_path) in enumerate(rename_tasks):
+            try:
+                if self.safe_rename(original_path, new_path):
                     self.tree.set(item, column='状态', value='已重命名')
                     self.add_rename_history(original_path, new_path)
+                    success_count += 1
+                else:
+                    skipped_count += 1
+            except Exception as e:
+                self.tree.set(item, column='状态', value=f'错误: {str(e)}')
+                error_count += 1
 
-                    if item_type == '<DIR>':
-                        logging.info(f"Renamed folder: {original_path} to {new_path}")
-                    else:
-                        logging.info(f"Renamed file: {original_path} to {new_path}")
+            progress['value'] = i + 1
+            self.master.update_idletasks()
 
-                except Exception as e:
-                    error_msg = f'错误: {str(e)}'
-                    self.tree.set(item, column='状态', value=error_msg)
-                    logging.error(f"Error renaming {original_path}: {str(e)}")
+        progress.destroy()
 
+        # 批量更新UI和历史记录
+        self.tree.update()
+        self.save_history()
+
+        # 显示结果
+        messagebox.showinfo("重命名结果",
+                            f"总计: {total}\n成功: {success_count}\n失败: {error_count}\n跳过: {skipped_count}")
+
+        # 刷新预览
         self.refresh_preview()
-        self.save_rename_history()
 
-    def add_rename_history(self, original_path, new_path):
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        if original_path not in self.rename_history:
-            self.rename_history[original_path] = []
-        self.rename_history[original_path].append((timestamp, new_path))
+        # 如果只重命名了一个文件，选中并预览该文件
+        if len(selected_items) == 1 and success_count == 1:
+            self.tree.selection_set(selected_items[0])
+            self.on_treeview_select(None)
+
+
+    def is_file_in_use(self, filepath):
+        for proc in psutil.process_iter(['name', 'open_files']):
+            try:
+                for file in proc.open_files():
+                    if file.path == filepath:
+                        return True
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                pass
+        return False
 
     def cancel_renaming(self):
         self.selected_folder = None
@@ -1832,6 +1939,24 @@ class OptimizedFileRenamerUI:
     def refresh_preview(self):
         self.preview_files()
 
+    def delete_file_with_elevated_privileges(self, file_path):
+        try:
+            # 获取 SE_BACKUP_NAME 权限
+            priv_flags = win32security.TOKEN_ADJUST_PRIVILEGES | win32security.TOKEN_QUERY
+            hToken = win32security.OpenProcessToken(win32api.GetCurrentProcess(), priv_flags)
+            priv_id = win32security.LookupPrivilegeValue(None, win32security.SE_BACKUP_NAME)
+            win32security.AdjustTokenPrivileges(hToken, 0, [(priv_id, win32security.SE_PRIVILEGE_ENABLED)])
+
+            # 获取 SE_RESTORE_NAME 权限
+            priv_id = win32security.LookupPrivilegeValue(None, win32security.SE_RESTORE_NAME)
+            win32security.AdjustTokenPrivileges(hToken, 0, [(priv_id, win32security.SE_PRIVILEGE_ENABLED)])
+
+            # 尝试删除文件
+            win32file.DeleteFile(file_path)
+            return True
+        except pywintypes.error as e:
+            logging.error(f"Error deleting file with elevated privileges: {e}")
+            return False
 
     def delete_selected_file(self):
         selected_items = self.tree.selection()
@@ -1839,71 +1964,294 @@ class OptimizedFileRenamerUI:
             messagebox.showwarning("警告", "请选择一个文件或文件夹")
             return
 
+        # 停止所有预览
+        self.stop_video_playback()
+        self.preview_cancel_event.set()
+
         if messagebox.askyesno("确认删除", "您确定要删除这些文件或文件夹吗？"):
+            delete_queue = queue.Queue()
             for item in selected_items:
-                values = self.tree.item(item, 'values')
-                if len(values) != 7:
-                    messagebox.showerror("错误", f"意外的数据结构: {values}")
-                    continue
+                delete_queue.put(item)
 
-                original_name, _, _, item_type, _, relative_path, _ = values
+            progress = ttk.Progressbar(self.master, length=300, mode='determinate')
+            progress.pack(pady=10)
+            progress['maximum'] = len(selected_items)
+
+            cancel_button = ttk.Button(self.master, text="取消", command=self.cancel_deletion)
+            cancel_button.pack(pady=5)
+
+            self.deletion_in_progress = True
+            self.items_deleted = 0
+
+            threading.Thread(target=self.delete_files_thread, args=(delete_queue, progress, cancel_button)).start()
+    def delete_files_thread(self, delete_queue, progress, cancel_button):
+        while not delete_queue.empty() and self.deletion_in_progress:
+            item = delete_queue.get()
+            values = self.tree.item(item, 'values')
+            if len(values) < 7:
+                self.master.after(0, lambda: messagebox.showerror("错误", f"意外的数据结构: {values}"))
+                continue
+
+            original_name, _, _, item_type, _, relative_path, _ = values[:7]
+            full_path = os.path.join(self.selected_folder, relative_path, original_name)
+
+            if os.path.exists(full_path):
+                if item_type == '<DIR>':
+                    try:
+                        shutil.rmtree(full_path)
+                        self.master.after(0, lambda i=item: self.tree.delete(i))
+                        self.items_deleted += 1
+                    except Exception as e:
+                        self.master.after(0, lambda: messagebox.showerror("删除错误",
+                                                                          f"删除文件夹 {full_path} 时发生错误：{str(e)}"))
+                else:
+                    if self.delete_file_safely(full_path, item):
+                        self.items_deleted += 1
+            else:
+                self.master.after(0, lambda: messagebox.showwarning("警告", f"文件或文件夹不存在: {full_path}"))
+
+            self.master.after(0, lambda: progress.step())
+
+        self.master.after(0, lambda: self.finish_deletion(progress, cancel_button))
+
+    def finish_deletion(self, progress, cancel_button):
+        progress.destroy()
+        cancel_button.destroy()
+        self.deletion_in_progress = False
+        messagebox.showinfo("完成", f"删除操作完成。共删除 {self.items_deleted} 个项目。")
+        self.refresh_preview()
+
+    def cancel_deletion(self):
+        self.deletion_in_progress = False
+
+    def delete_file_safely(self, file_path, tree_item=None):
+        try:
+            os.remove(file_path)
+            logging.info(f"Deleted file: {file_path}")
+            if tree_item:
+                self.master.after(0, lambda: self.tree.delete(tree_item))
+            return True
+        except PermissionError:
+            # 尝试使用提升的权限删除
+            if self.delete_file_with_elevated_privileges(file_path):
+                logging.info(f"Deleted file with elevated privileges: {file_path}")
+                if tree_item:
+                    self.master.after(0, lambda: self.tree.delete(tree_item))
+                return True
+            else:
+                return self.handle_file_in_use(file_path)
+        except Exception as e:
+            self.master.after(0, lambda: messagebox.showerror("错误", f"删除文件时发生错误: {str(e)}"))
+            return False
+
+    def handle_file_in_use(self, file_path):
+        using_processes = self.find_processes_using_file(file_path)
+        if using_processes:
+            process_info = "\n".join([f"{proc.name()} (PID: {proc.pid})" for proc in using_processes])
+            message = f"文件 '{os.path.basename(file_path)}' 被以下进程占用:\n{process_info}\n\n是否尝试关闭这些进程并重试删除？"
+            if messagebox.askyesno("文件被占用", message):
+                for proc in using_processes:
+                    try:
+                        proc.terminate()
+                        proc.wait(timeout=5)
+                    except psutil.NoSuchProcess:
+                        pass
+                    except psutil.TimeoutExpired:
+                        messagebox.showwarning("警告", f"无法终止进程 {proc.name()} (PID: {proc.pid})")
+
+                # 重试删除
                 try:
-                    full_path = os.path.join(self.selected_folder, relative_path, original_name)
-                    if os.path.exists(full_path):
-                        if item_type == '<DIR>':
-                            shutil.rmtree(full_path)
-                            logging.info(f"Deleted folder: {full_path}")
-                        else:
-                            os.remove(full_path)
-                            logging.info(f"Deleted file: {full_path}")
-                        self.tree.delete(item)
-                    else:
-                        messagebox.showwarning("警告", f"文件或文件夹不存在: {full_path}")
+                    os.remove(file_path)
+                    return True
                 except Exception as e:
-                    error_msg = f'错误: {str(e)}'
-                    messagebox.showerror("删除错误", error_msg)
-                    logging.error(f"Error deleting {full_path}: {str(e)}")
+                    messagebox.showerror("错误", f"重试删除文件失败: {str(e)}")
+                    return False
+            else:
+                messagebox.showinfo("操作取消", "文件删除已取消")
+                return False
+        else:
+            messagebox.showerror("错误", f"无法删除文件: {file_path}")
+            return False
 
-            self.refresh_preview()
+    def find_processes_using_file(self, filepath):
+        using_processes = []
+        for proc in psutil.process_iter(['name', 'open_files']):
+            try:
+                for file in proc.open_files():
+                    if file.path == filepath:
+                        using_processes.append(proc)
+                        break
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                pass
+        return using_processes
 
     def undo_rename(self):
-        history = load_history()
-        if not history:
+        # 停止所有预览
+        self.stop_video_playback()
+        self.preview_cancel_event.set()
+
+        if not self.rename_history:
             messagebox.showinfo("提示", "没有可以撤销的重命名操作")
             return
 
-        last_rename = history.pop()
-        original_path, new_path = last_rename
+        last_renamed_file = next(iter(self.rename_history))
+        history_list = self.rename_history[last_renamed_file]
+        if history_list:
+            timestamp, new_path = history_list.pop()
+            original_path = last_renamed_file
+
+            try:
+                if os.path.isdir(new_path):
+                    self.move_with_elevated_privileges(new_path, original_path)
+                else:
+                    self.rename_with_elevated_privileges(new_path, original_path)
+
+                if not history_list:
+                    del self.rename_history[last_renamed_file]
+
+                self.save_history()
+                self.preview_files()
+                messagebox.showinfo("成功", "已成功撤销上一次重命名操作")
+            except Exception as e:
+                messagebox.showerror("错误", f"撤销重命名时发生错误: {str(e)}")
+        else:
+            messagebox.showinfo("提示", "没有可以撤销的重命名操作")
+
+    def rename_with_elevated_privileges(self, src, dst):
         try:
-            if os.path.isdir(new_path):
-                # 如果是文件夹，需要特殊处理
-                shutil.move(new_path, original_path)
-            else:
-                os.rename(new_path, original_path)
-            save_history(history)
-            self.preview_files()
-            messagebox.showinfo("成功", "已成功撤销上一次重命名操作")
+            # 获取 SE_RESTORE_NAME 权限
+            priv_flags = win32security.TOKEN_ADJUST_PRIVILEGES | win32security.TOKEN_QUERY
+            hToken = win32security.OpenProcessToken(win32api.GetCurrentProcess(), priv_flags)
+            priv_id = win32security.LookupPrivilegeValue(None, win32security.SE_RESTORE_NAME)
+            win32security.AdjustTokenPrivileges(hToken, 0, [(priv_id, win32security.SE_PRIVILEGE_ENABLED)])
+
+            # 执行重命名
+            win32file.MoveFileEx(src, dst, win32file.MOVEFILE_REPLACE_EXISTING)
+        except pywintypes.error as e:
+            raise Exception(f"提升权限重命名失败: {e}")
+
+    def move_with_elevated_privileges(self, src, dst):
+        try:
+            # 获取 SE_RESTORE_NAME 权限
+            priv_flags = win32security.TOKEN_ADJUST_PRIVILEGES | win32security.TOKEN_QUERY
+            hToken = win32security.OpenProcessToken(win32api.GetCurrentProcess(), priv_flags)
+            priv_id = win32security.LookupPrivilegeValue(None, win32security.SE_RESTORE_NAME)
+            win32security.AdjustTokenPrivileges(hToken, 0, [(priv_id, win32security.SE_PRIVILEGE_ENABLED)])
+
+            # 执行移动
+            shutil.move(src, dst)
         except Exception as e:
-            messagebox.showerror("错误", f"无法撤销重命名: {e}")
+            raise Exception(f"提升权限移动文件夹失败: {e}")
 
     def show_history(self):
-        history_list = load_history()
-        if not history_list:
-            messagebox.showinfo("历史记录", "没有历史记录")
+        self.load_history()  # 重新加载历史记录
+        if not self.rename_history:
+            messagebox.showinfo("历史记录", "没有重命名历史记录")
             return
 
         history_window = tk.Toplevel(self.master)
         history_window.title("重命名历史")
         history_window.geometry("800x600")
 
-        history_tree = ttk.Treeview(history_window, columns=("原始文件名", "重命名后"), show="headings")
-        history_tree.heading("原始文件名", text="原始文件名")
-        history_tree.heading("重命名后", text="重命名后")
+        columns = ("原文件名", "新文件名", "重命名时间", "原始路径", "新路径")
+        history_tree = ttk.Treeview(history_window, columns=columns, show="headings")
+        history_tree = ttk.Treeview(history_window, columns=columns, show="headings", selectmode="extended")
 
-        for entry in history_list:
-            history_tree.insert("", "end", values=(entry[0], entry[1]))
+        # 设置列标题
+        for col in columns[:3]:  # 只显示前三列的标题
+            history_tree.heading(col, text=col)
+            history_tree.column(col, width=200)
+
+        def delete_selected_history():
+            selected_items = history_tree.selection()
+            if not selected_items:
+                messagebox.showwarning("警告", "请选择要删除的历史记录")
+                return
+            if messagebox.askyesno("确认", f"您确定要删除选中的 {len(selected_items)} 条历史记录吗？"):
+                for item in selected_items:
+                    values = history_tree.item(item, 'values')
+                    original_path = values[3]  # 假设原始路径在第4列
+                    if original_path in self.rename_history:
+                        timestamp = values[2]  # 假设时间戳在第3列
+                        self.rename_history[original_path] = [
+                            (t, p) for t, p in self.rename_history[original_path] if t != timestamp
+                        ]
+                        if not self.rename_history[original_path]:
+                            del self.rename_history[original_path]
+                    history_tree.delete(item)
+                self.save_history()
+                messagebox.showinfo("完成", "选中的历史记录已删除")
+
+        context_menu = tk.Menu(history_window, tearoff=0)
+        context_menu.add_command(label="删除选中的历史记录", command=delete_selected_history)
+
+        def show_context_menu(event):
+            context_menu.post(event.x_root, event.y_root)
+
+        history_tree.bind("<Button-3>", show_context_menu)
+
+        # 隐藏路径列
+        history_tree.column("原始路径", width=0, stretch=tk.NO)
+        history_tree.column("新路径", width=0, stretch=tk.NO)
+
+        for original_path, history_list in self.rename_history.items():
+            for timestamp, new_path in history_list:
+                original_name = os.path.basename(original_path)
+                new_name = os.path.basename(new_path)
+                history_tree.insert("", "end", values=(original_name, new_name, timestamp, original_path, new_path))
 
         history_tree.pack(fill=tk.BOTH, expand=True)
+
+        # 添加滚动条
+        scrollbar = ttk.Scrollbar(history_window, orient="vertical", command=history_tree.yview)
+        scrollbar.pack(side="right", fill="y")
+        history_tree.configure(yscrollcommand=scrollbar.set)
+
+        # 添加右键菜单
+        self.create_history_context_menu(history_window, history_tree)
+
+    def create_history_context_menu(self, history_window, history_tree):
+        context_menu = tk.Menu(history_window, tearoff=0)
+        context_menu.add_command(label="打开文件", command=lambda: self.open_history_file(history_tree))
+        context_menu.add_command(label="打开文件位置", command=lambda: self.open_history_file_location(history_tree))
+
+        def show_context_menu(event):
+            item = history_tree.identify_row(event.y)
+            if item:
+                history_tree.selection_set(item)
+                context_menu.post(event.x_root, event.y_root)
+
+        history_tree.bind("<Button-3>", show_context_menu)
+
+    def open_history_file(self, history_tree):
+        selected_items = history_tree.selection()
+        if not selected_items:
+            messagebox.showwarning("警告", "请选择一个文件")
+            return
+        item = selected_items[0]
+        values = history_tree.item(item, 'values')
+        if len(values) < 5:
+            messagebox.showerror("错误", f"意外的数据结构: {values}")
+            return
+        file_path = values[4]  # 假设完整的新路径存储在第5列
+        self.open_file(file_path)
+
+    def open_history_file_location(self, history_tree):
+        selected_items = history_tree.selection()
+        if not selected_items:
+            messagebox.showwarning("警告", "请选择一个文件或文件夹")
+            return
+
+        item = selected_items[0]
+        values = history_tree.item(item, 'values')
+        if len(values) < 5:  # 确保我们有足够的值
+            messagebox.showerror("错误", f"意外的数据结构: {values}")
+            return
+
+        new_path = values[4]  # 假设完整的新路径存储在第5列
+        folder_path = os.path.dirname(new_path)
+
+        self.open_file_location(folder_path)
 
     def show_file_rename_history(self):
         selected_items = self.tree.selection()
@@ -1920,7 +2268,8 @@ class OptimizedFileRenamerUI:
         original_name, _, _, _, _, relative_path, *_ = values
         file_path = os.path.join(self.selected_folder, relative_path, original_name)
 
-        if file_path in self.rename_history:
+        history = self.get_file_rename_history(file_path)
+        if history:
             history_window = tk.Toplevel(self.master)
             history_window.title(f"重命名历史 - {original_name}")
             history_window.geometry("600x400")
@@ -1930,10 +2279,17 @@ class OptimizedFileRenamerUI:
             history_tree.heading("新名称", text="新名称")
             history_tree.pack(fill=tk.BOTH, expand=True)
 
-            for timestamp, new_name in self.rename_history[file_path]:
-                history_tree.insert("", "end", values=(timestamp, os.path.basename(new_name)))
+            for timestamp, new_path in history:
+                history_tree.insert("", "end", values=(timestamp, os.path.basename(new_path)))
         else:
             messagebox.showinfo("提示", "该文件没有重命名历史")
+
+    def get_file_rename_history(self, file_path):
+        history = []
+        for original_path, rename_list in self.rename_history.items():
+            if original_path == file_path or any(new_path == file_path for _, new_path in rename_list):
+                history.extend(rename_list)
+        return sorted(history, key=lambda x: x[0])  # 按时间戳排序
 
     def _extract_cd_number(self, base_name):
         cd_match = re.search(r'_(\d{3})_\d{3}$', base_name)
@@ -1956,12 +2312,21 @@ class OptimizedFileRenamerUI:
                 base_name = base_name.replace(rule[0], rule[1])
         return base_name
 
-
-
-
     def show_about(self):
-        about_text = "文件重命名工具\n版本 1.6\n\n作者：naomi032\n\n该工具用于批量重命名文件，支持多种重命名选项。"
-        messagebox.showinfo("关于", about_text)
+        about_window = tk.Toplevel(self.master)
+        about_window.title("关于")
+
+        about_text = (
+            "文件重命名工具\n版本 1.6\n\n"
+            "作者：naomi032\n\n"
+            "该工具用于批量重命名文件，支持多种重命名选项。\n\n"
+        )
+
+        label = tk.Label(about_window, text=about_text)
+        label.pack(pady=10)
+
+        link_button = tk.Button(about_window, text="访问项目地址", command=self.open_help, fg="blue", cursor="hand2")
+        link_button.pack(pady=10)
 
     def open_help(self):
         help_url = "https://github.com/naomi032/JAV-code-Purifier"
@@ -2137,7 +2502,6 @@ class OptimizedFileRenamerUI:
             self.current_segment += 1
             self.frame_count = 0
             self.play_video_segment()
-
 
     def on_closing(self):
         self.stop_video_playback()
