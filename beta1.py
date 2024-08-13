@@ -18,6 +18,7 @@ import atexit
 import asyncio
 import io
 import base64
+import queue
 import warnings
 import cv2
 import time
@@ -26,6 +27,11 @@ from concurrent.futures import ThreadPoolExecutor
 import tkinter as tk
 import random
 import psutil
+import win32security
+import win32file
+import win32api
+import win32con
+import pywintypes
 
 
 # 常量定义
@@ -313,6 +319,7 @@ class OptimizedFileRenamerUI:
         self.rename_history = {}
         self.load_rename_history()
         self.create_menu()
+        self.preview_cancel_event = threading.Event()
 
     def delayed_initialization(self):
         try:
@@ -768,17 +775,7 @@ class OptimizedFileRenamerUI:
                 return False
         return False
 
-    def find_processes_using_file(self, filepath):
-        using_processes = []
-        for proc in psutil.process_iter(['name', 'open_files']):
-            try:
-                for file in proc.open_files():
-                    if file.path == filepath:
-                        using_processes.append(proc)
-                        break
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                pass
-        return using_processes
+
 
     def load_rename_history(self):
         if os.path.exists(HISTORY_FILE):
@@ -1906,38 +1903,90 @@ class OptimizedFileRenamerUI:
     def refresh_preview(self):
         self.preview_files()
 
+    def delete_file_with_elevated_privileges(self, file_path):
+        try:
+            # 获取 SE_BACKUP_NAME 权限
+            priv_flags = win32security.TOKEN_ADJUST_PRIVILEGES | win32security.TOKEN_QUERY
+            hToken = win32security.OpenProcessToken(win32api.GetCurrentProcess(), priv_flags)
+            priv_id = win32security.LookupPrivilegeValue(None, win32security.SE_BACKUP_NAME)
+            win32security.AdjustTokenPrivileges(hToken, 0, [(priv_id, win32security.SE_PRIVILEGE_ENABLED)])
+
+            # 获取 SE_RESTORE_NAME 权限
+            priv_id = win32security.LookupPrivilegeValue(None, win32security.SE_RESTORE_NAME)
+            win32security.AdjustTokenPrivileges(hToken, 0, [(priv_id, win32security.SE_PRIVILEGE_ENABLED)])
+
+            # 尝试删除文件
+            win32file.DeleteFile(file_path)
+            return True
+        except pywintypes.error as e:
+            logging.error(f"Error deleting file with elevated privileges: {e}")
+            return False
+
     def delete_selected_file(self):
         selected_items = self.tree.selection()
         if not selected_items:
             messagebox.showwarning("警告", "请选择一个文件或文件夹")
             return
 
+        # 停止所有预览
+        self.stop_video_playback()
+        self.preview_cancel_event.set()
+
         if messagebox.askyesno("确认删除", "您确定要删除这些文件或文件夹吗？"):
+            delete_queue = queue.Queue()
             for item in selected_items:
-                values = self.tree.item(item, 'values')
-                if len(values) < 7:
-                    messagebox.showerror("错误", f"意外的数据结构: {values}")
-                    continue
+                delete_queue.put(item)
 
-                original_name, _, _, item_type, _, relative_path, _ = values[:7]
-                full_path = os.path.join(self.selected_folder, relative_path, original_name)
+            progress = ttk.Progressbar(self.master, length=300, mode='determinate')
+            progress.pack(pady=10)
+            progress['maximum'] = len(selected_items)
 
-                try:
-                    if os.path.exists(full_path):
-                        if item_type == '<DIR>':
-                            shutil.rmtree(full_path)
-                            logging.info(f"Deleted folder: {full_path}")
-                            self.tree.delete(item)
-                        else:
-                            self.delete_file_safely(full_path, item)
-                    else:
-                        messagebox.showwarning("警告", f"文件或文件夹不存在: {full_path}")
-                except Exception as e:
-                    error_msg = f'错误: {str(e)}'
-                    messagebox.showerror("删除错误", error_msg)
-                    logging.error(f"Error deleting {full_path}: {str(e)}")
+            cancel_button = ttk.Button(self.master, text="取消", command=self.cancel_deletion)
+            cancel_button.pack(pady=5)
 
-            self.refresh_preview()
+            self.deletion_in_progress = True
+            self.items_deleted = 0
+
+            threading.Thread(target=self.delete_files_thread, args=(delete_queue, progress, cancel_button)).start()
+    def delete_files_thread(self, delete_queue, progress, cancel_button):
+        while not delete_queue.empty() and self.deletion_in_progress:
+            item = delete_queue.get()
+            values = self.tree.item(item, 'values')
+            if len(values) < 7:
+                self.master.after(0, lambda: messagebox.showerror("错误", f"意外的数据结构: {values}"))
+                continue
+
+            original_name, _, _, item_type, _, relative_path, _ = values[:7]
+            full_path = os.path.join(self.selected_folder, relative_path, original_name)
+
+            if os.path.exists(full_path):
+                if item_type == '<DIR>':
+                    try:
+                        shutil.rmtree(full_path)
+                        self.master.after(0, lambda i=item: self.tree.delete(i))
+                        self.items_deleted += 1
+                    except Exception as e:
+                        self.master.after(0, lambda: messagebox.showerror("删除错误",
+                                                                          f"删除文件夹 {full_path} 时发生错误：{str(e)}"))
+                else:
+                    if self.delete_file_safely(full_path, item):
+                        self.items_deleted += 1
+            else:
+                self.master.after(0, lambda: messagebox.showwarning("警告", f"文件或文件夹不存在: {full_path}"))
+
+            self.master.after(0, lambda: progress.step())
+
+        self.master.after(0, lambda: self.finish_deletion(progress, cancel_button))
+
+    def finish_deletion(self, progress, cancel_button):
+        progress.destroy()
+        cancel_button.destroy()
+        self.deletion_in_progress = False
+        messagebox.showinfo("完成", f"删除操作完成。共删除 {self.items_deleted} 个项目。")
+        self.refresh_preview()
+
+    def cancel_deletion(self):
+        self.deletion_in_progress = False
 
     def delete_file_safely(self, file_path, tree_item=None):
         try:
@@ -1947,7 +1996,14 @@ class OptimizedFileRenamerUI:
                 self.master.after(0, lambda: self.tree.delete(tree_item))
             return True
         except PermissionError:
-            return self.handle_file_in_use(file_path)
+            # 尝试使用提升的权限删除
+            if self.delete_file_with_elevated_privileges(file_path):
+                logging.info(f"Deleted file with elevated privileges: {file_path}")
+                if tree_item:
+                    self.master.after(0, lambda: self.tree.delete(tree_item))
+                return True
+            else:
+                return self.handle_file_in_use(file_path)
         except Exception as e:
             self.master.after(0, lambda: messagebox.showerror("错误", f"删除文件时发生错误: {str(e)}"))
             return False
@@ -1981,35 +2037,17 @@ class OptimizedFileRenamerUI:
             messagebox.showerror("错误", f"无法删除文件: {file_path}")
             return False
 
-    def delete_files_thread(self, delete_queue, progress, cancel_button):
-        while not delete_queue.empty() and self.deletion_in_progress:
-            item = delete_queue.get()
-            values = self.tree.item(item, 'values')
-            if len(values) < 7:
-                self.master.after(0, lambda: messagebox.showerror("错误", f"意外的数据结构: {values}"))
-                continue
-
-            original_name, _, _, item_type, _, relative_path, _ = values[:7]
-            full_path = os.path.join(self.selected_folder, relative_path, original_name)
-
-            if os.path.exists(full_path):
-                if item_type == '<DIR>':
-                    try:
-                        shutil.rmtree(full_path)
-                        self.master.after(0, lambda i=item: self.tree.delete(i))
-                        self.items_deleted += 1
-                    except Exception as e:
-                        self.master.after(0, lambda: messagebox.showerror("删除错误",
-                                                                          f"删除文件夹 {full_path} 时发生错误：{str(e)}"))
-                else:
-                    if self.delete_file_safely(full_path, item):
-                        self.items_deleted += 1
-            else:
-                self.master.after(0, lambda: messagebox.showwarning("警告", f"文件或文件夹不存在: {full_path}"))
-
-            self.master.after(0, lambda: progress.step())
-
-        self.master.after(0, lambda: self.finish_deletion(progress, cancel_button))
+    def find_processes_using_file(self, filepath):
+        using_processes = []
+        for proc in psutil.process_iter(['name', 'open_files']):
+            try:
+                for file in proc.open_files():
+                    if file.path == filepath:
+                        using_processes.append(proc)
+                        break
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                pass
+        return using_processes
 
     def undo_rename(self):
         history = load_history()
