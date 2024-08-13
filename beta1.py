@@ -33,16 +33,17 @@ import win32api
 import win32con
 import pywintypes
 
-
 # 常量定义
 CONFIG_FILE = 'config.ini'
 HISTORY_FILE = 'history.json'
 STATE_FILE = 'state.json'
 CUSTOM_RULES_FILE = 'custom_rules.json'
+VERSION = "v1.6.0"
+
+# 配置日志和警告
 logging.basicConfig(filename='renamer.log', level=logging.DEBUG)
 warnings.filterwarnings("ignore", category=UserWarning)
 sys.setrecursionlimit(5000)  # 增加递归限制，默认是100
-VERSION = "v1.6.0"
 
 
 
@@ -317,7 +318,7 @@ class OptimizedFileRenamerUI:
         self.loading_animation.set_task("初始化程序...")
         self.master.after(100, self.delayed_initialization)
         self.rename_history = {}
-        self.load_rename_history()
+        self.rename_history = self.load_history()
         self.create_menu()
         self.preview_cancel_event = threading.Event()
 
@@ -717,30 +718,21 @@ class OptimizedFileRenamerUI:
         if os.path.exists(HISTORY_FILE):
             try:
                 with open(HISTORY_FILE, 'r', encoding='utf-8') as file:
-                    content = file.read()
-                    if content.strip():  # 检查文件是否为空
-                        self.rename_history = json.loads(content)
-                    else:
-                        print(f"History file {HISTORY_FILE} is empty.")
-                        self.rename_history = {}
-                print(f"Loaded history from {HISTORY_FILE}: {self.rename_history}")  # 调试信息
-            except json.JSONDecodeError as e:
-                print(f"Error decoding JSON from {HISTORY_FILE}: {e}")  # 打印错误信息
-                self.rename_history = {}
+                    return json.load(file)
+            except json.JSONDecodeError:
+                logging.error(f"Error decoding JSON from {HISTORY_FILE}")
             except Exception as e:
-                print(f"Unexpected error loading history from {HISTORY_FILE}: {e}")
-                self.rename_history = {}
-        else:
-            print(f"History file {HISTORY_FILE} not found.")  # 调试信息
-            self.rename_history = {}
+                logging.error(f"Unexpected error loading history from {HISTORY_FILE}: {e}")
+        return {}
 
     def save_history(self):
         try:
-            with open(HISTORY_FILE, 'w') as file:
-                json.dump(self.rename_history, file, indent=4)
-            print(f"Saved history to {HISTORY_FILE}: {self.rename_history}")  # 调试信息
+            with open(HISTORY_FILE, 'w', encoding='utf-8') as file:
+                json.dump(self.rename_history, file, ensure_ascii=False, indent=4)
         except Exception as e:
-            print(f"Error saving history to {HISTORY_FILE}: {e}")  # 打印错误信息
+            logging.error(f"Error saving history to {HISTORY_FILE}: {e}")
+
+
 
     def safe_rename(self, src, dst, max_attempts=3, delay=1):
         for attempt in range(max_attempts):
@@ -1475,6 +1467,7 @@ class OptimizedFileRenamerUI:
 
     def rename_files(self):
         renamed_files = []
+        history = self.load_history()
         for item in self.tree.get_children():
             values = self.tree.item(item, 'values')
             original_name, preview_name, final_name, item_type, size, relative_path, status = values[:7]
@@ -1489,10 +1482,10 @@ class OptimizedFileRenamerUI:
 
                 if original_name != final_name:
                     try:
-                        if safe_rename(original_path, new_path):
+                        if self.safe_rename(original_path, new_path):
                             self.tree.set(item, column='状态', value='已重命名')
                             renamed_files.append([original_path, new_path])
-                            self.add_rename_history(original_path, new_path)
+                            history.append([original_path, new_path])  # 添加到历史记录
                             logging.info(f"Renamed file: {original_path} to {new_path}")
                         else:
                             self.tree.set(item, column='状态', value='重命名失败: 文件被占用')
@@ -1503,7 +1496,8 @@ class OptimizedFileRenamerUI:
                 else:
                     self.tree.set(item, column='状态', value='无需重命名')
 
-        return renamed_files
+                self.save_history(history)  # 保存更新后的历史记录
+                return renamed_files
 
     def delete_small_videos(self):
         if not self.selected_folder:
@@ -2050,24 +2044,62 @@ class OptimizedFileRenamerUI:
         return using_processes
 
     def undo_rename(self):
-        history = load_history()
-        if not history:
+        # 停止所有预览
+        self.stop_video_playback()
+        self.preview_cancel_event.set()
+
+        if not self.rename_history:
             messagebox.showinfo("提示", "没有可以撤销的重命名操作")
             return
 
-        last_rename = history.pop()
-        original_path, new_path = last_rename
+        last_renamed_file = next(iter(self.rename_history))
+        history_list = self.rename_history[last_renamed_file]
+        if history_list:
+            timestamp, new_path = history_list.pop()
+            original_path = last_renamed_file
+
+            try:
+                if os.path.isdir(new_path):
+                    self.move_with_elevated_privileges(new_path, original_path)
+                else:
+                    self.rename_with_elevated_privileges(new_path, original_path)
+
+                if not history_list:
+                    del self.rename_history[last_renamed_file]
+
+                self.save_history()
+                self.preview_files()
+                messagebox.showinfo("成功", "已成功撤销上一次重命名操作")
+            except Exception as e:
+                messagebox.showerror("错误", f"撤销重命名时发生错误: {str(e)}")
+        else:
+            messagebox.showinfo("提示", "没有可以撤销的重命名操作")
+
+    def rename_with_elevated_privileges(self, src, dst):
         try:
-            if os.path.isdir(new_path):
-                # 如果是文件夹，需要特殊处理
-                shutil.move(new_path, original_path)
-            else:
-                os.rename(new_path, original_path)
-            save_history(history)
-            self.preview_files()
-            messagebox.showinfo("成功", "已成功撤销上一次重命名操作")
+            # 获取 SE_RESTORE_NAME 权限
+            priv_flags = win32security.TOKEN_ADJUST_PRIVILEGES | win32security.TOKEN_QUERY
+            hToken = win32security.OpenProcessToken(win32api.GetCurrentProcess(), priv_flags)
+            priv_id = win32security.LookupPrivilegeValue(None, win32security.SE_RESTORE_NAME)
+            win32security.AdjustTokenPrivileges(hToken, 0, [(priv_id, win32security.SE_PRIVILEGE_ENABLED)])
+
+            # 执行重命名
+            win32file.MoveFileEx(src, dst, win32file.MOVEFILE_REPLACE_EXISTING)
+        except pywintypes.error as e:
+            raise Exception(f"提升权限重命名失败: {e}")
+
+    def move_with_elevated_privileges(self, src, dst):
+        try:
+            # 获取 SE_RESTORE_NAME 权限
+            priv_flags = win32security.TOKEN_ADJUST_PRIVILEGES | win32security.TOKEN_QUERY
+            hToken = win32security.OpenProcessToken(win32api.GetCurrentProcess(), priv_flags)
+            priv_id = win32security.LookupPrivilegeValue(None, win32security.SE_RESTORE_NAME)
+            win32security.AdjustTokenPrivileges(hToken, 0, [(priv_id, win32security.SE_PRIVILEGE_ENABLED)])
+
+            # 执行移动
+            shutil.move(src, dst)
         except Exception as e:
-            messagebox.showerror("错误", f"无法撤销重命名: {e}")
+            raise Exception(f"提升权限移动文件夹失败: {e}")
 
     def show_history(self):
         self.load_history()  # 重新加载历史记录
