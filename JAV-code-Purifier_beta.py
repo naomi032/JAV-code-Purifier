@@ -32,6 +32,7 @@ import win32file
 import win32api
 import win32con
 import pywintypes
+from datetime import datetime
 
 # 常量定义
 CONFIG_FILE = 'config.ini'
@@ -882,6 +883,36 @@ class OptimizedFileRenamerUI:
         else:
             messagebox.showerror("错误", "文件不存在")
 
+    def open_file_safely(self, file_path):
+        if not os.path.exists(file_path):
+            messagebox.showerror("错误", f"文件不存在: {file_path}")
+            return
+
+        try:
+            if sys.platform == "win32":
+                os.startfile(file_path)
+            elif sys.platform == "darwin":  # macOS
+                subprocess.run(["open", file_path], check=True)
+            else:  # linux variants
+                subprocess.run(["xdg-open", file_path], check=True)
+        except Exception as e:
+            messagebox.showerror("错误", f"无法打开文件: {str(e)}")
+
+    def open_file_location_safely(self, folder_path):
+        if not os.path.exists(folder_path):
+            messagebox.showerror("错误", f"文件夹不存在: {folder_path}")
+            return
+
+        try:
+            if sys.platform == "win32":
+                os.startfile(folder_path)
+            elif sys.platform == "darwin":  # macOS
+                subprocess.run(["open", folder_path], check=True)
+            else:  # linux variants
+                subprocess.run(["xdg-open", folder_path], check=True)
+        except Exception as e:
+            messagebox.showerror("错误", f"无法打开文件位置: {str(e)}")
+
     def open_selected_file(self):
         selected_items = self.tree.selection()
         if not selected_items:
@@ -1510,17 +1541,78 @@ class OptimizedFileRenamerUI:
             return
 
         video_extensions = ('.mp4', '.avi', '.mkv', '.mov', '.wmv')
+        default_size_limit_mb = 300  # 默认大小限制为 300MB
+
+        # 创建一个输入对话框，允许用户输入删除大小的限制，默认值为 300MB
+        size_limit_str = simpledialog.askstring("删除大小限制", "请输入文件大小限制 (MB):",
+                                                initialvalue=default_size_limit_mb)
+        if not size_limit_str:
+            return  # 用户取消输入
+        try:
+            size_limit = int(size_limit_str) * 1024 * 1024  # 将MB转换为字节
+        except ValueError:
+            messagebox.showerror("输入错误", "请输入有效的数字")
+            return
+
+        files_to_delete = []
+
+        for root, _, files in os.walk(self.selected_folder):
+            for filename in files:
+                if filename.lower().endswith(video_extensions):
+                    file_path = os.path.join(root, filename)
+                    if os.path.getsize(file_path) < size_limit:
+                        files_to_delete.append(file_path)
+
+        if not files_to_delete:
+            messagebox.showinfo("信息", f"没有找到小于{size_limit_str}MB的视频文件")
+            return
+
+        # 显示即将删除的文件列表并请求用户确认
+        file_list_str = "\n".join(os.path.basename(f) for f in files_to_delete)
+        confirm = messagebox.askokcancel("确认删除",
+                                         f"以下视频文件将被删除:\n\n{file_list_str}\n\n确定要删除这些文件吗？")
+
+        if not confirm:
+            return
+
         deleted_count = 0
 
-        for filename in os.listdir(self.selected_folder):
-            file_path = os.path.join(self.selected_folder, filename)
-            if filename.lower().endswith(video_extensions):
-                if os.path.getsize(file_path) < 100 * 1024 * 1024:  # 小于100MB
-                    os.remove(file_path)
-                    deleted_count += 1
+        progress_window = tk.Toplevel(self.master)
+        progress_window.title("删除小视频")
+        progress_bar = ttk.Progressbar(progress_window, length=300, mode='determinate')
+        progress_bar.pack(pady=10)
+        status_label = ttk.Label(progress_window, text="正在删除文件...")
+        status_label.pack(pady=5)
 
-        messagebox.showinfo("完成", f"已删除 {deleted_count} 个小于100MB的视频文件")
+        self.deletion_cancelled = False
+        cancel_button = ttk.Button(progress_window, text="取消", command=self.cancel_deletion)
+        cancel_button.pack(pady=5)
+
+        progress_bar['maximum'] = len(files_to_delete)
+
+        for file_path in files_to_delete:
+            if self.deletion_cancelled:
+                break
+            try:
+                os.remove(file_path)
+                deleted_count += 1
+                status_label.config(text=f"已删除: {deleted_count}")
+            except Exception as e:
+                logging.error(f"删除文件时出错 {file_path}: {str(e)}")
+            progress_bar['value'] += 1
+            progress_window.update()
+
+        progress_window.destroy()
+        if not self.deletion_cancelled:
+            messagebox.showinfo("完成", f"已删除 {deleted_count} 个小于{size_limit_str}MB的视频文件")
         self.refresh_preview()
+
+    def cancel_deletion(self):
+        self.deletion_cancelled = True
+
+    def run(self):
+        self.master.protocol("WM_DELETE_WINDOW", self.on_closing)
+        self.master.mainloop()
 
     def delete_non_video_files(self):
         if not self.selected_folder:
@@ -1582,31 +1674,51 @@ class OptimizedFileRenamerUI:
     def process_filename(self, name, ask_for_confirmation=True):
         base_name, ext = os.path.splitext(name)
 
-        # 处理包含 'part' 的文件名
+        # 1. 删除网址结构和特定前缀
+        if self.remove_prefix_var.get():
+            base_name = re.sub(r'^.*?@|^(hhd800\.com@|www\.98T\.la@)', '', base_name)
+
+        # 2. 删除特殊字符，保留横杠
+        base_name = re.sub(r'[<>:"/\\|?*]', '', base_name)
+
+        # 3. 处理包含 'part' 的文件名
         part_match = re.search(r'(part\d+)', base_name, re.IGNORECASE)
         part_suffix = ''
         if part_match:
             part_suffix = part_match.group(1)
             base_name = base_name[:part_match.start()].strip()
 
-        # 新增：处理类似 sivr00247 的格式
-        product_code_match = re.search(r'([a-zA-Z]+)(\d{5,})', base_name, re.IGNORECASE)
+        # 4. 处理产品代码格式（如 IPX-888）
+        product_code_match = re.search(r'([a-zA-Z]{2,6})[-]?(\d{3,4})', base_name, re.IGNORECASE)
         if product_code_match:
             letters, numbers = product_code_match.groups()
-            base_name = f"{letters.lower()}-{int(numbers)}"  # 移除前导零
+            base_name = f"{letters.upper()}-{numbers}"
+        else:
+            # 如果没有找到产品代码格式，应用其他规则
+            base_name = self._apply_alternative_rules(base_name)
 
-        cd_match = re.search(r'cd(\d+)$', base_name, re.IGNORECASE)
-        if cd_match and ask_for_confirmation:
-            if not self.confirm_cd_rename(name):
-                return name, False
+        # 5. 应用自定义规则
+        base_name = self._apply_custom_rules(base_name)
 
+        # 6. 重新添加 part 后缀（如果存在）
+        if part_suffix:
+            base_name += f".{part_suffix}"
+
+        # 7. 处理 CD 编号
         cd_number = self._extract_cd_number(base_name)
-        base_name = re.sub(r'_\d{3}_\d{3}$', '', base_name)
+        if cd_number:
+            base_name += f"cd{int(cd_number)}"
 
-        # 应用其他重命名规则
-        base_name = re.sub(r'[<>:"/\\|?*]', '', base_name)
-        if self.remove_prefix_var.get():
-            base_name = re.sub(r'hhd800\.com@|www\.98T\.la@', '', base_name)
+        # 8. 移除文件名中的额外信息（如 _8K）
+        base_name = re.sub(r'_\d+K$', '', base_name)
+
+        # 9. 处理括号中的内容
+        base_name = re.sub(r'\([^)]*\)', '', base_name).strip()
+
+        new_name = base_name + ext
+        return new_name, new_name != name
+
+    def _apply_alternative_rules(self, base_name):
         if self.replace_00_var.get():
             base_name = re.sub(r'([a-zA-Z]+)00(\d+)', r'\1-\2', base_name)
         if self.remove_hhb_var.get():
@@ -1622,21 +1734,12 @@ class OptimizedFileRenamerUI:
             match = re.search(r'[A-Za-z]{2,6}-?\d{3,4}', base_name)
             if match:
                 base_name = match.group()
+        return base_name
 
-        base_name = self._apply_custom_rules(base_name)
+    def _extract_cd_number(self, base_name):
+        cd_match = re.search(r'_(\d{3})_\d{3}$', base_name)
+        return cd_match.group(1) if cd_match else None
 
-        # 重新添加 part 后缀（如果存在）
-        if part_suffix:
-            base_name += f".{part_suffix}"
-
-        if cd_number:
-            base_name += f"cd{int(cd_number)}"
-
-        # 移除文件名中的额外信息（如 _8K）
-        base_name = re.sub(r'_\d+K$', '', base_name)
-
-        new_name = base_name + ext
-        return new_name, new_name != name
 
 
 
@@ -1707,15 +1810,27 @@ class OptimizedFileRenamerUI:
         self.statusbar.config(text="预览完成")
 
     def get_file_size(self, file_path):
-        size = os.path.getsize(file_path)
-        if size < 1024:
-            return f"{size} B"
-        elif size < 1024 * 1024:
-            return f"{size/1024:.2f} KB"
-        elif size < 1024 * 1024 * 1024:
-            return f"{size/(1024*1024):.2f} MB"
-        else:
-            return f"{size/(1024*1024*1024):.2f} GB"
+        try:
+            size = os.path.getsize(file_path)
+            if size < 1024:
+                return f"{size} B"
+            elif size < 1024 * 1024:
+                return f"{size / 1024:.2f} KB"
+            elif size < 1024 * 1024 * 1024:
+                return f"{size / (1024 * 1024):.2f} MB"
+            else:
+                return f"{size / (1024 * 1024 * 1024):.2f} GB"
+        except OSError:
+            return "N/A"
+
+    def handle_filename_conflict(self, path, existing_files):
+        base, ext = os.path.splitext(path)
+        counter = 1
+        new_path = path
+        while new_path in existing_files or os.path.exists(new_path):
+            new_path = f"{base}_{counter}{ext}"
+            counter += 1
+        return new_path
 
     def extract_archives(self):
         if not self.selected_folder:
@@ -1800,12 +1915,20 @@ class OptimizedFileRenamerUI:
 
         if messagebox.askyesno("确认重命名",
                                f"您确定要重命名选中的 {len(items_to_rename)} 个{'文件' if mode == 'files' else '文件夹'}吗？"):
-            total, renamed_count, unchanged_count, error_count = self.perform_renaming(items_to_rename)
-            messagebox.showinfo("完成", f"重命名操作完成。\n"
-                                        f"共进行了 {total} 次重命名尝试，其中：\n"
-                                        f"{renamed_count} 个被成功修改，\n"
-                                        f"{unchanged_count} 个与原名称相同未重命名，\n"
-                                        f"{error_count} 个修改失败。")
+            total, renamed_count, unchanged_count, error_count, conflict_count = self.perform_renaming(items_to_rename)
+
+            result_message = f"重命名操作完成。\n" \
+                             f"共进行了 {total} 次重命名尝试，其中：\n" \
+                             f"{renamed_count} 个被成功修改，\n" \
+                             f"{unchanged_count} 个与原名称相同未重命名，\n" \
+                             f"{error_count} 个修改失败，\n" \
+                             f"{conflict_count} 个发生命名冲突。"
+
+            messagebox.showinfo("完成", result_message)
+
+            if conflict_count > 0:
+                self.show_conflict_resolution_dialog(self.conflicting_files)
+
             self.refresh_preview()
 
     def perform_renaming(self, items_to_rename):
@@ -1813,9 +1936,13 @@ class OptimizedFileRenamerUI:
         renamed_count = 0
         unchanged_count = 0
         error_count = 0
+        conflict_count = 0
+        self.conflicting_files = []
 
         progress = ttk.Progressbar(self.master, length=300, mode='determinate')
         progress.pack(pady=10)
+
+        renamed_files = {}  # 用于跟踪已重命名的文件
 
         for i, item in enumerate(items_to_rename):
             values = self.tree.item(item, 'values')
@@ -1830,15 +1957,21 @@ class OptimizedFileRenamerUI:
                 new_path = os.path.join(self.selected_folder, relative_path, final_name)
 
                 if original_path != new_path:
-                    if self.safe_rename(original_path, new_path):
-                        self.tree.set(item, column='状态', value='已重命名')
-                        if self.add_rename_history(original_path, new_path):
-                            renamed_count += 1
-                        else:
-                            unchanged_count += 1
+                    if new_path in renamed_files or os.path.exists(new_path):
+                        conflict_count += 1
+                        self.conflicting_files.append((original_path, new_path))
+                        self.tree.set(item, column='状态', value='命名冲突')
                     else:
-                        self.tree.set(item, column='状态', value='重命名失败')
-                        error_count += 1
+                        if self.safe_rename(original_path, new_path):
+                            self.tree.set(item, column='状态', value='已重命名')
+                            if self.add_rename_history(original_path, new_path):
+                                renamed_count += 1
+                            else:
+                                unchanged_count += 1
+                            renamed_files[new_path] = True
+                        else:
+                            self.tree.set(item, column='状态', value='重命名失败')
+                            error_count += 1
                 else:
                     self.tree.set(item, column='状态', value='无需重命名')
                     unchanged_count += 1
@@ -1850,7 +1983,193 @@ class OptimizedFileRenamerUI:
             self.master.update_idletasks()
 
         progress.destroy()
-        return total, renamed_count, unchanged_count, error_count
+        return total, renamed_count, unchanged_count, error_count, conflict_count
+
+    def get_file_modification_time(self, file_path):
+        try:
+            mtime = os.path.getmtime(file_path)
+            return datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M:%S')
+        except OSError:
+            return "N/A"
+
+    def show_conflict_resolution_dialog(self, conflicting_files):
+        dialog = tk.Toplevel(self.master)
+        dialog.title("文件名冲突")
+        dialog.geometry("800x500")
+
+        # 应用暗黑主题
+        dialog.configure(bg=self.style.lookup('TFrame', 'background'))
+
+        label = ttk.Label(dialog, text="以下文件名发生冲突，请选择处理方式：")
+        label.pack(pady=10)
+
+        # 使用Treeview显示冲突文件信息
+        columns = ("原文件名", "新文件名", "状态", "文件大小", "修改日期")
+        self.conflict_tree = ttk.Treeview(dialog, columns=columns, show="headings")
+        for col in columns:
+            self.conflict_tree.heading(col, text=col)
+            self.conflict_tree.column(col, width=150)
+        self.conflict_tree.pack(pady=10, padx=10, fill=tk.BOTH, expand=True)
+
+        # 添加滚动条
+        scrollbar = ttk.Scrollbar(dialog, orient="vertical", command=self.conflict_tree.yview)
+        scrollbar.pack(side="right", fill="y")
+        self.conflict_tree.configure(yscrollcommand=scrollbar.set)
+
+        for original_path, new_path in conflicting_files:
+            size = self.get_file_size(original_path)
+            mod_time = self.get_file_modification_time(original_path)
+            self.conflict_tree.insert("", "end", values=(original_path, new_path, "未解决", size, mod_time))
+
+        button_frame = ttk.Frame(dialog)
+        button_frame.pack(pady=10)
+
+        buttons = [
+            ("自动解决选中的冲突", self.resolve_selected_conflicts),
+            ("打开文件位置", self.open_conflict_file_location),
+            ("打开文件", self.open_conflict_file),
+            ("删除文件", self.delete_conflict_file),
+            ("手动重命名", self.manual_rename_conflict_file),
+            ("关闭", dialog.destroy)
+        ]
+
+        for text, command in buttons:
+            ttk.Button(button_frame, text=text, command=command).pack(side=tk.LEFT, padx=5)
+
+    def resolve_selected_conflicts(self):
+        selected_items = self.conflict_tree.selection()
+        existing_files = set()
+        for item in selected_items:
+            values = self.conflict_tree.item(item, 'values')
+            if len(values) < 2:
+                self.conflict_tree.set(item, column='状态', value='错误：无效的数据')
+                continue
+
+            original_path, new_path = values[0], values[1]
+
+            if not os.path.exists(original_path):
+                response = messagebox.askyesnocancel("文件不存在",
+                                                     f"源文件不存在: {original_path}\n是否跳过此文件？\n选择'否'将尝试重命名目标文件。")
+                if response is None:  # 用户选择取消
+                    continue
+                elif response:  # 用户选择是，跳过此文件
+                    self.conflict_tree.set(item, column='状态', value='已跳过（源文件不存在）')
+                    continue
+                else:  # 用户选择否，尝试重命名目标文件
+                    if os.path.exists(new_path):
+                        self.rename_target_file(new_path, self.conflict_tree, item)
+                    else:
+                        self.conflict_tree.set(item, column='状态', value='错误（源文件和目标文件都不存在）')
+                    continue
+
+            # 源文件存在，尝试重命名
+            resolved_path = self.handle_filename_conflict(new_path, existing_files)
+            try:
+                os.rename(original_path, resolved_path)
+                self.add_rename_history(original_path, resolved_path)
+                self.conflict_tree.set(item, column='状态', value='已解决')
+                self.conflict_tree.set(item, column='新文件名', value=resolved_path)
+                existing_files.add(resolved_path)
+            except FileNotFoundError:
+                self.conflict_tree.set(item, column='状态', value='错误（文件不存在）')
+            except PermissionError:
+                self.conflict_tree.set(item, column='状态', value='错误（无权限）')
+            except Exception as e:
+                self.conflict_tree.set(item, column='状态', value=f'错误（{str(e)}）')
+
+        self.refresh_preview()
+
+    def open_conflict_file_location(self):
+        selected_items = self.conflict_tree.selection()
+        if selected_items:
+            values = self.conflict_tree.item(selected_items[0], 'values')
+            original_path = values[0]
+            self.open_file_location_safely(os.path.dirname(original_path))
+
+    def open_conflict_file(self):
+        selected_items = self.conflict_tree.selection()
+        if selected_items:
+            values = self.conflict_tree.item(selected_items[0], 'values')
+            original_path = values[0]
+            self.open_file_safely(original_path)
+
+    def delete_conflict_file(self):
+        selected_items = self.conflict_tree.selection()
+        if selected_items:
+            if messagebox.askyesno("确认删除", "您确定要删除选中的文件吗？"):
+                for item in selected_items:
+                    values = self.conflict_tree.item(item, 'values')
+                    original_path = values[0]
+                    if os.path.exists(original_path):
+                        try:
+                            os.remove(original_path)
+                            self.conflict_tree.delete(item)
+                        except Exception as e:
+                            messagebox.showerror("删除失败", f"无法删除文件: {str(e)}")
+                self.refresh_preview()
+
+    def manual_rename_conflict_file(self):
+        selected_items = self.conflict_tree.selection()
+        if selected_items:
+            item = selected_items[0]
+            values = self.conflict_tree.item(item, 'values')
+            original_path = values[0]
+            new_name = simpledialog.askstring("手动重命名", "请输入新的文件名:",
+                                              initialvalue=os.path.basename(values[1]))
+            if new_name:
+                new_path = os.path.join(os.path.dirname(original_path), new_name)
+                try:
+                    os.rename(original_path, new_path)
+                    self.add_rename_history(original_path, new_path)
+                    self.conflict_tree.set(item, column='新文件名', value=new_path)
+                    self.conflict_tree.set(item, column='状态', value='已解决')
+                except Exception as e:
+                    self.conflict_tree.set(item, column='状态', value=f'错误（{str(e)}）')
+        self.refresh_preview()
+
+    def rename_target_file(self, file_path, tree, tree_item):
+        new_name = simpledialog.askstring("重命名目标文件", "请输入新的文件名:",
+                                          initialvalue=os.path.basename(file_path))
+        if new_name:
+            new_path = os.path.join(os.path.dirname(file_path), new_name)
+            try:
+                os.rename(file_path, new_path)
+                tree.set(tree_item, column='新文件名', value=new_path)
+                tree.set(tree_item, column='状态', value='已解决（重命名目标文件）')
+            except Exception as e:
+                tree.set(tree_item, column='状态', value=f'错误（{str(e)}）')
+        else:
+            tree.set(tree_item, column='状态', value='已跳过（用户取消）')
+
+    def open_file_safely(self, file_path):
+        if not os.path.exists(file_path):
+            messagebox.showerror("错误", f"文件不存在: {file_path}")
+            return
+
+        try:
+            if sys.platform == "win32":
+                os.startfile(file_path)
+            elif sys.platform == "darwin":  # macOS
+                subprocess.run(["open", file_path], check=True)
+            else:  # linux variants
+                subprocess.run(["xdg-open", file_path], check=True)
+        except Exception as e:
+            messagebox.showerror("错误", f"无法打开文件: {str(e)}")
+
+    def open_file_location_safely(self, folder_path):
+        if not os.path.exists(folder_path):
+            messagebox.showerror("错误", f"文件夹不存在: {folder_path}")
+            return
+
+        try:
+            if sys.platform == "win32":
+                os.startfile(folder_path)
+            elif sys.platform == "darwin":  # macOS
+                subprocess.run(["open", folder_path], check=True)
+            else:  # linux variants
+                subprocess.run(["xdg-open", folder_path], check=True)
+        except Exception as e:
+            messagebox.showerror("错误", f"无法打开文件位置: {str(e)}")
 
     def rename_selected_file(self):
         selected_items = self.tree.selection()
