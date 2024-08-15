@@ -33,6 +33,7 @@ import win32api
 import win32con
 import pywintypes
 from datetime import datetime
+import importlib
 
 # 常量定义
 CONFIG_FILE = 'config.ini'
@@ -45,6 +46,7 @@ VERSION = "v1.6.0"
 logging.basicConfig(filename='renamer.log', level=logging.DEBUG)
 warnings.filterwarnings("ignore", category=UserWarning)
 sys.setrecursionlimit(5000)  # 增加递归限制，默认是100
+
 
 
 
@@ -323,6 +325,16 @@ class OptimizedFileRenamerUI:
         self.create_menu()
         self.preview_cancel_event = threading.Event()
 
+        if not os.path.exists('rename_rules.py'):
+            with open('rename_rules.py', 'w') as f:
+                f.write('''
+        import re
+
+        def process_filename(base_name, self):
+            # 在这里添加你的重命名规则
+            return base_name
+        ''')
+            messagebox.showinfo("提示", "已创建默认的 'rename_rules.py' 文件。您可以编辑此文件来自定义重命名规则。")
 
     def delayed_initialization(self):
         try:
@@ -1159,7 +1171,12 @@ class OptimizedFileRenamerUI:
         menubar.add_cascade(label="帮助", menu=help_menu)
         help_menu.add_command(label="关于", command=self.show_about)
 
-
+    def edit_rename_rules(self):
+        try:
+            subprocess.run(['notepad', 'rename_rules.py'], check=True)
+            messagebox.showinfo("提示", "重命名规则已更新，请刷新预览以应用更改。")
+        except subprocess.CalledProcessError:
+            messagebox.showerror("错误", "无法打开编辑器。")
 
     def clear_rename_history(self):
         if messagebox.askyesno("确认", "您确定要清空所有重命名历史记录吗？"):
@@ -1409,16 +1426,20 @@ class OptimizedFileRenamerUI:
             ("刷新预览", self.refresh_preview),
             ("解压文件", self.extract_archives),
             ("删除小视频", self.delete_small_videos),
-            ("删除非视频文件", self.delete_non_video_files)
+            ("删除非视频文件", self.delete_non_video_files),
+            ("调整命名规则", self.open_rename_rules_dialog)  # 新增的按钮
         ]
 
         for i, (text, command) in enumerate(buttons):
             button = ElvenButton(buttons_frame, text=text, command=command, width=160, height=40, corner_radius=20)
-            button.grid(row=0, column=i, padx=4, pady=5)  # 稍微减少了水平间距
+            button.grid(row=i // 4, column=i % 4, padx=4, pady=5)
             if text == "开始重命名":
                 self.start_button = button
 
-        buttons_frame.grid_columnconfigure(tuple(range(len(buttons))), weight=1)
+        buttons_frame.grid_columnconfigure(tuple(range(4)), weight=1)
+        edit_rules_button = ElvenButton(buttons_frame, text="编辑重命名规则", command=self.edit_rename_rules, width=160,
+                                        height=40, corner_radius=20)
+        edit_rules_button.grid(row=1, column=3, padx=4, pady=5)
 
 
     def create_statusbar(self):
@@ -1674,49 +1695,53 @@ class OptimizedFileRenamerUI:
     def process_filename(self, name, ask_for_confirmation=True):
         base_name, ext = os.path.splitext(name)
 
-        # 1. 删除网址结构和特定前缀
-        if self.remove_prefix_var.get():
-            base_name = re.sub(r'^.*?@|^(hhd800\.com@|www\.98T\.la@)', '', base_name)
+        try:
+            logging.info("尝试导入 rename_rules 模块")
+            import rename_rules
+            logging.info("成功导入 rename_rules 模块")
 
-        # 2. 删除特殊字符，保留横杠
-        base_name = re.sub(r'[<>:"/\\|?*]', '', base_name)
+            logging.info("尝试重新加载 rename_rules 模块")
+            importlib.reload(rename_rules)
+            logging.info("成功重新加载 rename_rules 模块")
 
-        # 3. 处理包含 'part' 的文件名
-        part_match = re.search(r'(part\d+)', base_name, re.IGNORECASE)
-        part_suffix = ''
-        if part_match:
-            part_suffix = part_match.group(1)
-            base_name = base_name[:part_match.start()].strip()
+            logging.info(f"开始处理文件名: {base_name}")
+            base_name = rename_rules.process_filename(base_name, self)
+            logging.info(f"处理后的文件名: {base_name}")
 
-        # 4. 处理产品代码格式（如 IPX-888）
-        product_code_match = re.search(r'([a-zA-Z]{2,6})[-]?0*(\d{1,4})', base_name, re.IGNORECASE)
-        if product_code_match:
-            letters, numbers = product_code_match.groups()
-            base_name = f"{letters.upper()}-{numbers.zfill(3)}"
-        else:
-            # 如果没有找到产品代码格式，应用其他规则
-            base_name = self._apply_alternative_rules(base_name)
-
-        # 5. 应用自定义规则
-        base_name = self._apply_custom_rules(base_name)
-
-        # 6. 重新添加 part 后缀（如果存在）
-        if part_suffix:
-            base_name += f".{part_suffix}"
-
-        # 7. 处理 CD 编号
-        cd_number = self._extract_cd_number(base_name)
-        if cd_number:
-            base_name += f"cd{int(cd_number)}"
-
-        # 8. 移除文件名中的额外信息（如 _8K）
-        base_name = re.sub(r'_\d+K$', '', base_name)
-
-        # 9. 处理括号中的内容
-        base_name = re.sub(r'\([^)]*\)', '', base_name).strip()
+        except ImportError as e:
+            error_msg = f"无法加载重命名规则文件: {str(e)}"
+            logging.error(error_msg)
+            messagebox.showerror("错误", error_msg)
+            return name, False
+        except IndentationError as e:
+            error_msg = f"重命名规则文件中存在缩进错误: {str(e)}"
+            logging.error(error_msg)
+            messagebox.showerror("错误", error_msg)
+            return name, False
+        except Exception as e:
+            error_msg = f"应用重命名规则时出错：{str(e)}"
+            logging.error(error_msg)
+            messagebox.showerror("错误", error_msg)
+            return name, False
 
         new_name = base_name + ext
         return new_name, new_name != name
+
+    def open_rename_rules_dialog(self):
+        dialog = tk.Toplevel(self.master)
+        dialog.title("调整命名规则")
+        dialog.geometry("400x300")
+
+        ttk.Checkbutton(dialog, text="替换第一个 '00'", variable=self.replace_00_var).pack(anchor='w', padx=10, pady=5)
+        ttk.Checkbutton(dialog, text="删除特定前缀", variable=self.remove_prefix_var).pack(anchor='w', padx=10, pady=5)
+        ttk.Checkbutton(dialog, text="删除 'hhb' 及其后续内容", variable=self.remove_hhb_var).pack(anchor='w', padx=10,
+                                                                                                   pady=5)
+        ttk.Checkbutton(dialog, text="保留横杠后的三位数字", variable=self.retain_digits_var).pack(anchor='w', padx=10,
+                                                                                                   pady=5)
+        ttk.Checkbutton(dialog, text="保留 xxx-yyy 格式", variable=self.retain_format_var).pack(anchor='w', padx=10,
+                                                                                                pady=5)
+
+        ttk.Button(dialog, text="应用并预览", command=lambda: [dialog.destroy(), self.refresh_preview()]).pack(pady=10)
 
     def _apply_alternative_rules(self, base_name):
         if self.replace_00_var.get():
